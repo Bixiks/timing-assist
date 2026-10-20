@@ -5,7 +5,7 @@
 	},
 	"id": "assortedfruits.timing-assist",
 	"name": "Timing Assist",
-	"version": "v1.4.2",
+	"version": "v1.4.3",
 	"developer": "Assorted Fruits",
 	"description": "Holds your click for a few ms until the timing is safe, then lets it through. Works in every gamemode.",
 	"tags": [
@@ -23,7 +23,7 @@
 		"enabled": {
 			"type": "bool",
 			"name": "Enabled",
-			"description": "Turns the timing assist on or off.",
+			"description": "Turns the timing assist on or off. When off, the mod does nothing at all in levels. Takes effect next time you enter a level.",
 			"default": true
 		},
 		"max-delay": {

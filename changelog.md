@@ -1,3 +1,8 @@
+# v1.4.3
+- Another fix for percent and orbs not saving with Safe Mode off. The invisible test players were leaving traces in the game's level state and its object counter, which the game checks before saving. All of that is now put back exactly how it was after every check
+- The mod now waits a moment at the start of each attempt before it steps in
+- With Enabled turned off, the mod no longer does anything in levels
+
 # v1.4.2
 - Fixed percent and orbs not saving even with Safe Mode off: the invisible test players could touch the game's anticheat spike, which made the game think you were using noclip. The simulation now skips that spike and never touches the real hit
 - Also fixes the start of levels sometimes looking "dangerous" to the mod for the same reason

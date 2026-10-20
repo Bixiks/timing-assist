@@ -247,6 +247,7 @@ constexpr float kRiskClear = 1.5f;
 constexpr float kRiskClearLand = 0.5f;
 constexpr int kLandCap = 360;
 constexpr int kTopBranch = 5;
+constexpr int kStartGrace = 30;
 constexpr float kRiskGain = 3.f;
 constexpr float kMaxSnap = 24.f;
 constexpr float kSmoothTime = 0.025f;
@@ -430,6 +431,7 @@ struct State {
     Snapshot live[2];
     Smooth smooth[2];
     int updates = 0;
+    int attemptStart = 0;
     int lastAnyInput = kNoTick;
     int inputOffset = 0;
     std::array<int, 3> votes{};
@@ -494,18 +496,109 @@ Config readConfig() {
     return c;
 }
 
+struct GameGuard {
+    PlayLayer* pl = nullptr;
+    gd::map<std::pair<int, int>, int> activated;
+    double totalTime = 0.0;
+    double levelTime = 0.0;
+    double unkDouble3 = 0.0;
+    unsigned int commandIndex = 0;
+    float unkUint3 = 0.f;
+    unsigned int currentProgress = 0;
+    int unkUint4 = 0;
+    int unkUint5 = 0;
+    int unkUint6 = 0;
+    int unkUint7 = 0;
+    int unkUint8 = 0;
+    GameObject* portal1 = nullptr;
+    GameObject* portal2 = nullptr;
+    bool damageVerified = false;
+    bool passedIntegrity = false;
+    int objectsCreated = 0;
+    int jumps = 0;
+    bool hasJumped = false;
+    int uncommittedJumps = 0;
+    bool playerDied = false;
+    bool tryPlaceCheckpoint = false;
+    int clicks = 0;
+    int attempts = 0;
+
+    void capture(PlayLayer* layer) {
+        pl = layer;
+        if (!pl) return;
+        auto& gs = pl->m_gameState;
+        activated = gs.m_activatedObjectIDs;
+        totalTime = gs.m_totalTime;
+        levelTime = gs.m_levelTime;
+        unkDouble3 = gs.m_unkDouble3;
+        commandIndex = gs.m_commandIndex;
+        unkUint3 = gs.m_unkUint3;
+        currentProgress = gs.m_currentProgress;
+        unkUint4 = gs.m_unkUint4;
+        unkUint5 = gs.m_unkUint5;
+        unkUint6 = gs.m_unkUint6;
+        unkUint7 = gs.m_unkUint7;
+        unkUint8 = gs.m_unkUint8;
+        portal1 = gs.m_lastActivatedPortal1;
+        portal2 = gs.m_lastActivatedPortal2;
+        damageVerified = pl->m_damageVerified;
+        passedIntegrity = pl->m_passedIntegrity;
+        objectsCreated = pl->m_objectsCreated;
+        jumps = pl->m_jumps;
+        hasJumped = pl->m_hasJumped;
+        uncommittedJumps = pl->m_uncommittedJumps;
+        playerDied = pl->m_playerDied;
+        tryPlaceCheckpoint = pl->m_tryPlaceCheckpoint;
+        clicks = pl->m_clicks;
+        attempts = pl->m_attempts;
+    }
+
+    void restore() {
+        if (!pl) return;
+        auto& gs = pl->m_gameState;
+        gs.m_activatedObjectIDs = activated;
+        gs.m_totalTime = totalTime;
+        gs.m_levelTime = levelTime;
+        gs.m_unkDouble3 = unkDouble3;
+        gs.m_commandIndex = commandIndex;
+        gs.m_unkUint3 = unkUint3;
+        gs.m_currentProgress = currentProgress;
+        gs.m_unkUint4 = unkUint4;
+        gs.m_unkUint5 = unkUint5;
+        gs.m_unkUint6 = unkUint6;
+        gs.m_unkUint7 = unkUint7;
+        gs.m_unkUint8 = unkUint8;
+        gs.m_lastActivatedPortal1 = portal1;
+        gs.m_lastActivatedPortal2 = portal2;
+        pl->m_damageVerified = damageVerified;
+        pl->m_passedIntegrity = passedIntegrity;
+        pl->m_objectsCreated = objectsCreated;
+        pl->m_jumps = jumps;
+        pl->m_hasJumped = hasJumped;
+        pl->m_uncommittedJumps = uncommittedJumps;
+        pl->m_playerDied = playerDied;
+        pl->m_tryPlaceCheckpoint = tryPlaceCheckpoint;
+        pl->m_clicks = clicks;
+        pl->m_attempts = attempts;
+        pl = nullptr;
+    }
+};
+
 struct Budget {
     explicit Budget(double ms) {
         g.budgetActive = true;
         g.budgetHit = false;
         g.budgetEnd = Clock::now() + std::chrono::microseconds(static_cast<int64_t>(ms * 1000.0));
+        if (g.layer && g.ready) guard.capture(g.layer);
     }
     ~Budget() {
+        guard.restore();
         g.budgetActive = false;
         g.budgetHit = false;
     }
     Budget(Budget const&) = delete;
     Budget& operator=(Budget const&) = delete;
+    GameGuard guard;
 };
 
 bool outOfTime() {
@@ -834,8 +927,12 @@ bool layerReady(PlayLayer* pl) {
     return pl && g.ready && g.layer == pl && g.fakes[0] && g.fakes[1];
 }
 
+bool inStartGrace() {
+    return g.updates - g.attemptStart < kStartGrace;
+}
+
 bool canAssist(PlayLayer* pl, Targets const& t) {
-    if (!layerReady(pl) || g.untrusted) return false;
+    if (!layerReady(pl) || g.untrusted || inStartGrace()) return false;
     if (pl->m_playerDied || pl->m_levelEndAnimationStarted || pl->m_hasCompletedLevel || pl->m_isPaused) return false;
     for (int i = 0; i < t.count; i++) {
         auto p = t.players[i];
@@ -1656,7 +1753,7 @@ void drawDecision(PlayLayer* pl, Targets const& t, Channel const& ch, int now, C
 void drawLiveProjection(PlayLayer* pl) {
     if (!g.liveDraw) return;
     g.liveDraw->clear();
-    if (!g.debugOn || g.untrusted) return;
+    if (!g.debugOn || g.untrusted || inStartGrace()) return;
     auto p1 = pl->m_player1;
     if (!p1 || p1->m_isDead || pl->m_playerDied || pl->m_levelEndAnimationStarted) return;
 
@@ -2150,6 +2247,13 @@ class $modify(TAPlayLayer, PlayLayer) {
 
     void setupHasCompleted() {
         PlayLayer::setupHasCompleted();
+        g.attemptStart = g.updates;
+        if (!Mod::get()->getSettingValue<bool>("enabled")) return;
+
+        int* idCounter = reinterpret_cast<int*>(geode::base::get() + 0x6ba158);
+        int savedCounter = *idCounter;
+        int savedCreated = m_objectsCreated;
+        bool savedIntegrity = m_passedIntegrity;
 
         auto holder = CCLayer::create();
         holder->setVisible(false);
@@ -2159,20 +2263,27 @@ class $modify(TAPlayLayer, PlayLayer) {
             auto fake = PlayerObject::create(1, 1, this, holder, true);
             fake->setVisible(false);
             holder->addChild(fake);
+            fake->m_uniqueID = -90001 - i;
             g.fakes[i] = fake;
         }
 
-        ccBlendFunc blend = { GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA };
-        auto liveDraw = CCDrawNode::create();
-        liveDraw->setBlendFunc(blend);
-        m_objectLayer->addChild(liveDraw, 1000);
-        g.liveDraw = liveDraw;
+        *idCounter = savedCounter;
+        m_objectsCreated = savedCreated;
+        m_passedIntegrity = savedIntegrity;
 
-        auto decisionDraw = CCDrawNode::create();
-        decisionDraw->setBlendFunc(blend);
-        decisionDraw->setVisible(false);
-        m_objectLayer->addChild(decisionDraw, 1001);
-        g.decisionDraw = decisionDraw;
+        if (Mod::get()->getSettingValue<bool>("debug-overlay")) {
+            ccBlendFunc blend = { GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA };
+            auto liveDraw = CCDrawNode::create();
+            liveDraw->setBlendFunc(blend);
+            m_objectLayer->addChild(liveDraw, 1000);
+            g.liveDraw = liveDraw;
+
+            auto decisionDraw = CCDrawNode::create();
+            decisionDraw->setBlendFunc(blend);
+            decisionDraw->setVisible(false);
+            m_objectLayer->addChild(decisionDraw, 1001);
+            g.decisionDraw = decisionDraw;
+        }
 
         auto mod = Mod::get();
         g.label = nullptr;
@@ -2208,6 +2319,7 @@ class $modify(TAPlayLayer, PlayLayer) {
         if (ready) flushAll(this);
         endAllSmooth(ready);
         PlayLayer::resetLevel();
+        g.attemptStart = g.updates;
         g.changedThisAttempt = false;
         g.probe.active = false;
         g.mismatch = 0;
@@ -2253,6 +2365,11 @@ class $modify(TAPlayLayer, PlayLayer) {
             return;
         }
         PlayLayer::destroyPlayer(player, object);
+    }
+
+    void updateVerifyDamage() {
+        if (g.simulating) return;
+        PlayLayer::updateVerifyDamage();
     }
 
     void playGravityEffect(bool flip) {
