@@ -23,6 +23,8 @@ The check runs through orbs and pads using the game's own orb code, so every gam
 
 ## Frame perfects
 - It checks that you'd survive with a margin, not just barely. If your timing only scrapes by and another tick is clearly safer, it moves to that one.
+- For cube, ball and robot, a landing only counts as safe if you can keep going from there: standing still works, or some follow-up jump lands safely. So it aims for spots you can actually continue from. Landing right next to spikes is still fine.
+- **Plan Ahead** (1-4) sets how many moves ahead it checks. At 2 or more, the move after your next one has to work too. This works in every gamemode. Give it more Max Think Time when you raise it.
 - If nothing safe is found in the normal window, it looks a few ticks further as a last resort.
 - It calibrates its own timing. It compares its predictions with what really happens, and if it's consistently one tick off it corrects itself and remembers that.
 

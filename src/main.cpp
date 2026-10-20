@@ -246,6 +246,7 @@ constexpr float kShiftPenalty = 1.5f;
 constexpr float kRiskClear = 1.5f;
 constexpr float kRiskClearLand = 0.5f;
 constexpr int kLandCap = 360;
+constexpr int kTopBranch = 5;
 constexpr float kRiskGain = 3.f;
 constexpr float kMaxSnap = 24.f;
 constexpr float kSmoothTime = 0.025f;
@@ -317,6 +318,7 @@ struct Config {
     bool adjust = false;
     int adjustMax = 29;
     double budgetMs = 5.0;
+    int planAhead = 1;
 };
 
 struct SimEvent {
@@ -339,6 +341,9 @@ struct SimPlan {
     int watchFrom = -1;
     int captureAt = -1;
     bool noOffset = false;
+    bool branchAtLanding = false;
+    bool branchAtEnd = false;
+    Snapshot* branchOut = nullptr;
     bool trackClearance = false;
     SimRecord* record = nullptr;
 };
@@ -350,6 +355,9 @@ struct SimResult {
     bool resolved = false;
     bool landed = false;
     bool aborted = false;
+    bool captured = false;
+    bool branchSaved = false;
+    CCPoint capturePos;
     GameObject* landObject = nullptr;
     float landY = 0.f;
 };
@@ -405,6 +413,8 @@ struct EvalContext {
     int futureFrom = 0;
     bool wantProbe = false;
     bool noOffset = false;
+    bool thorough = false;
+    int depth = 0;
 };
 
 struct State {
@@ -436,6 +446,9 @@ struct State {
     float simClearance = kClearCap;
     bool captured = false;
     CCPoint capturePos;
+    bool runCaptured = false;
+    CCPoint runCapturePos;
+    std::array<std::array<Snapshot, 2>, kTopBranch + 1> branches;
     bool budgetActive = false;
     bool budgetHit = false;
     Clock::time_point budgetEnd;
@@ -477,6 +490,7 @@ Config readConfig() {
     c.adjust = mod->getSettingValue<bool>("wave-adjust");
     c.adjustMax = std::max(1, msToTicks(mod->getSettingValue<int64_t>("adjust-max")));
     c.budgetMs = static_cast<double>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("think-time"), 1, 30));
+    c.planAhead = static_cast<int>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("plan-ahead"), 1, 4));
     return c;
 }
 
@@ -939,6 +953,8 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
         if (tick == plan.captureAt) {
             g.capturePos = fakes[0]->getPosition();
             g.captured = true;
+            result.captured = true;
+            result.capturePos = g.capturePos;
         }
 
         bool grounded = fakes[0]->m_isOnGround;
@@ -958,19 +974,27 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
                 }
                 else if (++groundedFor > 3) {
                     phase = LandPhase::Done;
-                    end = std::min(end, tick + 1 + kLandMargin);
+                    end = std::min(end, tick + 1 + (plan.branchAtLanding ? 0 : kLandMargin));
                     result.landed = true;
                     result.landObject = fakes[0]->m_lastGroundObject;
                     result.landY = fakes[0]->getPositionY();
+                    if (plan.branchAtLanding && plan.branchOut) {
+                        for (int i = 0; i < count; i++) save(plan.branchOut[i], fakes[i], true);
+                        result.branchSaved = true;
+                    }
                 }
                 break;
             case LandPhase::WaitLand:
                 if (grounded) {
                     phase = LandPhase::Done;
-                    end = std::min(end, tick + 1 + kLandMargin);
+                    end = std::min(end, tick + 1 + (plan.branchAtLanding ? 0 : kLandMargin));
                     result.landed = true;
                     result.landObject = fakes[0]->m_lastGroundObject;
                     result.landY = fakes[0]->getPositionY();
+                    if (plan.branchAtLanding && plan.branchOut) {
+                        for (int i = 0; i < count; i++) save(plan.branchOut[i], fakes[i], true);
+                        result.branchSaved = true;
+                    }
                 }
                 break;
             default:
@@ -978,6 +1002,10 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
         }
     }
 
+    if (plan.branchAtEnd && plan.branchOut && !result.branchSaved && result.death < 0 && result.unknownAt < 0 && !result.aborted) {
+        for (int i = 0; i < count; i++) save(plan.branchOut[i], fakes[i], true);
+        result.branchSaved = true;
+    }
     result.clearance = g.simClearance;
     if (result.death >= 0) result.resolved = true;
     else if (result.aborted || result.unknownAt >= 0) result.resolved = false;
@@ -1028,11 +1056,124 @@ void armProbe(EvalContext const& c, SimPlan const& base, int rel, CCPoint predic
     }
 }
 
+bool isHolding(Snapshot const& s) {
+    auto it = s.m_holdingButtons.find(static_cast<int>(PlayerButton::Jump));
+    return it != s.m_holdingButtons.end() && it->second;
+}
+
+bool canContinue(EvalContext const& c, Snapshot* from, int depth, bool thorough) {
+    if (depth <= 0) return true;
+    Snapshot const* src[2] = { &from[0], &from[1] };
+    Snapshot* out = g.branches[std::clamp(depth - 1, 0, kTopBranch - 1)].data();
+    int count = c.targets->count;
+    Mode m = modeOf(from[0]);
+    int h = holdTicks(m);
+
+    auto attempt = [&](SimPlan& p) {
+        p.noOffset = c.noOffset;
+        p.branchOut = out;
+        auto r = runSim(c.pl, count, src, p);
+        if (r.aborted) return true;
+        if (r.death >= 0) return false;
+        if (depth == 1 || !r.branchSaved) return true;
+        return canContinue(c, out, depth - 1, false);
+    };
+
+    if (isLandMode(m)) {
+        SimPlan idle;
+        idle.length = 48;
+        idle.watchFrom = 0;
+        idle.branchAtLanding = true;
+        if (attempt(idle)) return true;
+
+        static constexpr int quick[] = { 0, 4, 9, 16, 26 };
+        static constexpr int dense[] = { 0, 2, 4, 6, 9, 12, 16, 21, 27, 34 };
+        auto tryJump = [&](int k) {
+            SimPlan p;
+            p.events.push_back({ k, true });
+            p.events.push_back({ k + h, false });
+            p.length = k + std::max(c.cfg->lookahead, kLandCap);
+            p.watchFrom = k;
+            p.branchAtLanding = true;
+            return attempt(p);
+        };
+        if (thorough) {
+            for (int k : dense) {
+                if (tryJump(k)) return true;
+            }
+        }
+        else {
+            for (int k : quick) {
+                if (tryJump(k)) return true;
+            }
+        }
+        return false;
+    }
+
+    if (isHoldMode(m)) {
+        bool holding = isHolding(from[0]);
+        int window = std::clamp(std::max(h, gapTicks(m)) + kAfterPress, 8, 40);
+        static constexpr int quick[] = { 0, 3, 6, 10, 15 };
+        static constexpr int dense[] = { 0, 1, 2, 3, 4, 6, 8, 10, 13, 17 };
+        auto tryToggle = [&](int k) {
+            SimPlan p;
+            p.events.push_back({ k, !holding });
+            p.length = k + window;
+            p.branchAtEnd = true;
+            return attempt(p);
+        };
+        SimPlan keep;
+        keep.length = window;
+        keep.branchAtEnd = true;
+        if (attempt(keep)) return true;
+        if (thorough) {
+            for (int k : dense) {
+                if (tryToggle(k)) return true;
+            }
+        }
+        else {
+            for (int k : quick) {
+                if (tryToggle(k)) return true;
+            }
+        }
+        return false;
+    }
+
+    int quiet = m == Mode::Spider ? 14 : 24;
+    SimPlan none;
+    none.length = quiet;
+    none.branchAtEnd = true;
+    if (attempt(none)) return true;
+    static constexpr int quick[] = { 0, 4, 8, 14 };
+    static constexpr int dense[] = { 0, 2, 4, 6, 8, 11, 14, 18 };
+    auto tryTap = [&](int k) {
+        SimPlan p;
+        p.events.push_back({ k, true });
+        p.events.push_back({ k + 3, false });
+        p.length = k + 16;
+        p.branchAtEnd = true;
+        return attempt(p);
+    };
+    if (thorough) {
+        for (int k : dense) {
+            if (tryTap(k)) return true;
+        }
+    }
+    else {
+        for (int k : quick) {
+            if (tryTap(k)) return true;
+        }
+    }
+    return false;
+}
+
 bool considerRun(EvalContext const& c, SimPlan& plan, bool score, Outcome& best, int idleUntil) {
     plan.length = std::max(plan.length, c.futureFrom + kWindowMargin);
     plan.trackClearance = score;
     plan.noOffset = c.noOffset;
     auto r = runSim(c.pl, c.targets->count, c.sources, plan);
+    g.runCaptured = r.captured;
+    g.runCapturePos = r.capturePos;
     if (r.aborted) {
         best.aborted = true;
         if (!best.ok) {
@@ -1044,6 +1185,7 @@ bool considerRun(EvalContext const& c, SimPlan& plan, bool score, Outcome& best,
     if (r.death >= 0 && r.death < idleUntil) best.idleDeath = true;
     bool ok = r.death < 0 && (r.unknownAt < 0 || r.unknownAt >= c.futureFrom);
     if (!ok) return false;
+    if (plan.branchOut && r.branchSaved && !canContinue(c, plan.branchOut, c.depth, c.thorough)) return false;
     float clear = std::min(r.clearance, kClearCap);
     if (!best.ok || clear > best.clearance) {
         best.ok = true;
@@ -1062,7 +1204,15 @@ bool considerRun(EvalContext const& c, SimPlan& plan, bool score, Outcome& best,
 SimPlan basePlan(EvalContext const& c) {
     SimPlan p;
     p.events = c.pending;
+    if (c.depth > 0) {
+        p.branchOut = g.branches[kTopBranch].data();
+        if (!isLandMode(c.mode)) p.branchAtEnd = true;
+    }
     return p;
+}
+
+int depthFor(Config const& cfg, Mode m) {
+    return isLandMode(m) ? cfg.planAhead : cfg.planAhead - 1;
 }
 
 void runPressPlan(EvalContext const& c, SimPlan& p, int rel, int releaseAt, bool score, Outcome& best, bool& probeDone, bool& stop) {
@@ -1070,8 +1220,8 @@ void runPressPlan(EvalContext const& c, SimPlan& p, int rel, int releaseAt, bool
     if (probe) p.captureAt = rel + std::min(6, releaseAt - rel - 2);
     int before = best.survivors;
     stop = considerRun(c, p, score, best, rel);
-    if (probe && best.survivors > before && g.captured) {
-        CCPoint predicted = g.capturePos;
+    if (probe && best.survivors > before && g.runCaptured) {
+        CCPoint predicted = g.runCapturePos;
         probeDone = true;
         armProbe(c, p, rel, predicted);
     }
@@ -1092,6 +1242,7 @@ Outcome evalPress(EvalContext const& c, int rel, bool score) {
             if (m == Mode::Robot) {
                 p.length = anchor + std::max(c.cfg->lookahead, kLandCap);
                 p.watchFrom = rel;
+                p.branchAtLanding = true;
             }
             else {
                 p.length = anchor + std::min(c.cfg->lookahead, h + kAfterRelease);
@@ -1105,16 +1256,13 @@ Outcome evalPress(EvalContext const& c, int rel, bool score) {
     if (isLandMode(m)) {
         int h = holdTicks(m);
         int cap = std::max(c.cfg->lookahead, kLandCap);
-        int releases[2] = { anchor + h, anchor + cap + 1 };
-        for (int releaseAt : releases) {
-            SimPlan p = basePlan(c);
-            p.events.push_back({ rel, true });
-            p.events.push_back({ releaseAt, false });
-            p.length = anchor + cap;
-            p.watchFrom = rel;
-            runPressPlan(c, p, rel, releaseAt, score, best, probeDone, stop);
-            if (stop || best.idleDeath) break;
-        }
+        SimPlan p = basePlan(c);
+        p.events.push_back({ rel, true });
+        p.events.push_back({ anchor + h, false });
+        p.length = anchor + cap;
+        p.watchFrom = rel;
+        p.branchAtLanding = true;
+        runPressPlan(c, p, rel, anchor + h, score, best, probeDone, stop);
         return best;
     }
 
@@ -1148,6 +1296,7 @@ Outcome evalRelease(EvalContext const& c, int rel, bool score) {
         p.events.push_back({ rel, false });
         p.length = anchor + std::max(c.cfg->lookahead, kLandCap);
         p.watchFrom = rel;
+        p.branchAtLanding = true;
         considerRun(c, p, score, best, rel);
         return best;
     }
@@ -1188,6 +1337,7 @@ EvalContext liveContext(PlayLayer* pl, Targets const& t, Channel const& ch, int 
     c.pending = pendingEvents(ch, now);
     c.mode = modeOf(t.players[0]);
     c.cfg = &cfg;
+    c.depth = depthFor(cfg, c.mode);
     c.futureFrom = 0;
     return c;
 }
@@ -1256,6 +1406,7 @@ Choice chooseTick(int now, int preferred, int lo, int hi, bool landMode, Eval&& 
 Choice choosePress(PlayLayer* pl, Targets const& t, Channel const& ch, int now, Config const& cfg) {
     auto c = liveContext(pl, t, ch, now, cfg);
     c.wantProbe = true;
+    c.thorough = true;
     int base = lastQueuedTick(ch, now);
     int preferred = base + leadFor(cfg, c.mode);
     int hi = preferred + maxDelayFor(cfg, c.mode);
@@ -1263,6 +1414,7 @@ Choice choosePress(PlayLayer* pl, Targets const& t, Channel const& ch, int now, 
     return chooseTick(now, preferred, base, hi, nearest, [&](int rel, bool score) {
         auto o = evalPress(c, rel, score);
         c.wantProbe = false;
+        c.thorough = false;
         return o;
     });
 }
@@ -1271,11 +1423,14 @@ Choice chooseRelease(PlayLayer* pl, Targets const& t, Channel const& ch, int now
     Mode m = modeOf(t.players[0]);
     if (!cfg.releaseAssist || !releaseMatters(m)) return Choice{ target, true, true };
     auto c = liveContext(pl, t, ch, now, cfg);
+    c.thorough = true;
     int lo = std::max(lastQueuedTick(ch, now), ch.firePressTick + 1);
     lo = std::min(lo, target);
     int hi = target + maxDelayFor(cfg, m);
     return chooseTick(now, target, lo, hi, m == Mode::Robot, [&](int rel, bool score) {
-        return evalRelease(c, rel, score);
+        auto o = evalRelease(c, rel, score);
+        c.thorough = false;
+        return o;
     });
 }
 
@@ -1286,6 +1441,7 @@ int pickLateTicks(PlayLayer* pl, Targets const& t, Channel const& ch, int now, b
     c.targets = &t;
     c.mode = modeOf(t.players[0]);
     c.cfg = &cfg;
+    c.depth = depthFor(cfg, c.mode);
     c.noOffset = true;
     CCPoint current = t.players[0]->getPosition();
 

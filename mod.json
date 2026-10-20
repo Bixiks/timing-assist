@@ -5,7 +5,7 @@
 	},
 	"id": "assortedfruits.timing-assist",
 	"name": "Timing Assist",
-	"version": "v1.3.2",
+	"version": "v1.4.0",
 	"developer": "Assorted Fruits",
 	"description": "Holds your click for a few ms until the timing is safe, then lets it through. Works in every gamemode.",
 	"tags": [
@@ -57,10 +57,10 @@
 		"lookahead": {
 			"type": "int",
 			"name": "Lookahead (ms)",
-			"description": "How far ahead it checks whether a click would kill you in ship, wave, UFO, swing and spider. Cube, ball and robot always follow the jump until you land (up to 1.5s).",
+			"description": "How far ahead it checks whether a click would kill you in ship, wave, UFO, swing and spider. Cube, ball and robot always follow the jump until you land, and this also raises how long they're allowed to fall (at least 1.5s).",
 			"default": 500,
 			"min": 150,
-			"max": 1000,
+			"max": 2000,
 			"control": {
 				"arrows": true,
 				"arrow-step": 50,
@@ -68,11 +68,25 @@
 				"slider-step": 10
 			}
 		},
+		"plan-ahead": {
+			"type": "int",
+			"name": "Plan Ahead (moves)",
+			"description": "How many moves ahead it makes sure you can still survive. 1 = the next move after your click has to work. 2 = the move after that too, and so on. Higher is smarter on tricky sections but needs more Max Think Time (try 15-20ms for 3 or 4).",
+			"default": 1,
+			"min": 1,
+			"max": 4,
+			"control": {
+				"arrows": true,
+				"arrow-step": 1,
+				"slider": true,
+				"slider-step": 1
+			}
+		},
 		"think-time": {
 			"type": "int",
 			"name": "Max Think Time (ms)",
 			"description": "The most time the mod can spend checking one click. If it runs out it just lets your input through unchanged, so it can't lag your game. Raise it on a fast PC for more saves, lower it if you ever feel stutter.",
-			"default": 5,
+			"default": 8,
 			"min": 1,
 			"max": 30,
 			"control": {

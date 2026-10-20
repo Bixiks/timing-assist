@@ -1,3 +1,12 @@
+# v1.4.0
+- Plan Ahead setting (1-4 moves): makes sure you can keep surviving that many moves after your click, in every gamemode
+- Lookahead can go up to 2 seconds now, and it also lets cube, ball and robot falls be followed longer
+
+# v1.3.3
+- Cube, ball and robot: a landing only counts as safe if you can keep going from there (standing still works, or some follow-up jump lands safely too). Fixes it picking a jump that touches down on a ledge and then falls into spikes
+- Landing right next to spikes is still fine, as long as the spot is survivable
+- Max Think Time default raised to 8ms since landings get checked more carefully now
+
 # v1.3.2
 - Fixed robot clicks lagging the game hard enough to cut your hold short
 - Every click now has a time limit (Max Think Time, 5ms by default). If the check runs out of time your input just goes through unchanged
