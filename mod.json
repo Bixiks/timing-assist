@@ -5,7 +5,7 @@
 	},
 	"id": "assortedfruits.timing-assist",
 	"name": "Timing Assist",
-	"version": "v1.3.1",
+	"version": "v1.3.2",
 	"developer": "Assorted Fruits",
 	"description": "Holds your click for a few ms until the timing is safe, then lets it through. Works in every gamemode.",
 	"tags": [
@@ -66,6 +66,20 @@
 				"arrow-step": 50,
 				"slider": true,
 				"slider-step": 10
+			}
+		},
+		"think-time": {
+			"type": "int",
+			"name": "Max Think Time (ms)",
+			"description": "The most time the mod can spend checking one click. If it runs out it just lets your input through unchanged, so it can't lag your game. Raise it on a fast PC for more saves, lower it if you ever feel stutter.",
+			"default": 5,
+			"min": 1,
+			"max": 30,
+			"control": {
+				"arrows": true,
+				"arrow-step": 1,
+				"slider": true,
+				"slider-step": 1
 			}
 		},
 		"simulate-orbs": {

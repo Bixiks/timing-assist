@@ -15,6 +15,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <chrono>
 
 using namespace geode::prelude;
 
@@ -230,6 +231,8 @@ using namespace geode::prelude;
 
 namespace {
 
+using Clock = std::chrono::steady_clock;
+
 constexpr int kModeCount = 8;
 constexpr int kLandMargin = 2;
 constexpr int kWindowMargin = 4;
@@ -313,6 +316,7 @@ struct Config {
     int smartWindow = 4;
     bool adjust = false;
     int adjustMax = 29;
+    double budgetMs = 5.0;
 };
 
 struct SimEvent {
@@ -345,12 +349,14 @@ struct SimResult {
     float clearance = kClearCap;
     bool resolved = false;
     bool landed = false;
+    bool aborted = false;
     GameObject* landObject = nullptr;
     float landY = 0.f;
 };
 
 struct Outcome {
     bool ok = false;
+    bool aborted = false;
     bool idleDeath = false;
     bool resolved = false;
     bool haveLanding = false;
@@ -430,6 +436,9 @@ struct State {
     float simClearance = kClearCap;
     bool captured = false;
     CCPoint capturePos;
+    bool budgetActive = false;
+    bool budgetHit = false;
+    Clock::time_point budgetEnd;
     bool changedThisAttempt = false;
     bool smartOn = false;
     bool debugOn = false;
@@ -467,7 +476,29 @@ Config readConfig() {
     c.smartWindow = std::clamp(msToTicks(mod->getSettingValue<int64_t>("smart-window")), 1, kRing - 2);
     c.adjust = mod->getSettingValue<bool>("wave-adjust");
     c.adjustMax = std::max(1, msToTicks(mod->getSettingValue<int64_t>("adjust-max")));
+    c.budgetMs = static_cast<double>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("think-time"), 1, 30));
     return c;
+}
+
+struct Budget {
+    explicit Budget(double ms) {
+        g.budgetActive = true;
+        g.budgetHit = false;
+        g.budgetEnd = Clock::now() + std::chrono::microseconds(static_cast<int64_t>(ms * 1000.0));
+    }
+    ~Budget() {
+        g.budgetActive = false;
+        g.budgetHit = false;
+    }
+    Budget(Budget const&) = delete;
+    Budget& operator=(Budget const&) = delete;
+};
+
+bool outOfTime() {
+    if (!g.budgetActive) return false;
+    if (g.budgetHit) return true;
+    if (Clock::now() > g.budgetEnd) g.budgetHit = true;
+    return g.budgetHit;
 }
 
 Mode modeOf(bool ship, bool bird, bool ball, bool dart, bool robot, bool spider, bool swing) {
@@ -556,7 +587,9 @@ std::vector<int> spreadAround(int center, int lo, int hi, std::initializer_list<
 std::vector<int> holdOptions(Mode m) {
     int typical = holdTicks(m);
     if (m == Mode::Robot) {
-        return spreadAround(typical, 2, 40, { 2, 5, 9, 14, 20, 28, 38 });
+        auto out = spreadAround(typical, 2, 40, { 4, 12, 24 });
+        if (out.size() > 6) out.resize(6);
+        return out;
     }
     int lo = std::max(2, typical / 2);
     int hi = std::clamp(typical * 5 / 2, 8, 50);
@@ -803,6 +836,11 @@ void captureLive(Targets const& t) {
 }
 
 SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPlan const& plan) {
+    if (outOfTime()) {
+        SimResult aborted;
+        aborted.aborted = true;
+        return aborted;
+    }
     PlayerObject* fakes[2] = { g.fakes[0], g.fakes[1] };
     for (int i = 0; i < count; i++) load(fakes[i], *sources[i], true);
 
@@ -847,6 +885,10 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
     g.captured = false;
 
     for (int tick = 0; tick < end; tick++) {
+        if ((tick & 15) == 15 && outOfTime()) {
+            result.aborted = true;
+            break;
+        }
         if (phase == LandPhase::WaitStart && tick >= plan.watchFrom) {
             phase = fakes[0]->m_isOnGround ? LandPhase::WaitLeave : LandPhase::WaitFirstLand;
         }
@@ -938,7 +980,7 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
 
     result.clearance = g.simClearance;
     if (result.death >= 0) result.resolved = true;
-    else if (result.unknownAt >= 0) result.resolved = false;
+    else if (result.aborted || result.unknownAt >= 0) result.resolved = false;
     else if (plan.watchFrom >= 0) result.resolved = result.landed;
     else result.resolved = true;
     g.simulating = false;
@@ -991,6 +1033,14 @@ bool considerRun(EvalContext const& c, SimPlan& plan, bool score, Outcome& best,
     plan.trackClearance = score;
     plan.noOffset = c.noOffset;
     auto r = runSim(c.pl, c.targets->count, c.sources, plan);
+    if (r.aborted) {
+        best.aborted = true;
+        if (!best.ok) {
+            best.ok = true;
+            best.clearance = kClearCap;
+        }
+        return true;
+    }
     if (r.death >= 0 && r.death < idleUntil) best.idleDeath = true;
     bool ok = r.death < 0 && (r.unknownAt < 0 || r.unknownAt >= c.futureFrom);
     if (!ok) return false;
@@ -1155,19 +1205,20 @@ Choice chooseTick(int now, int preferred, int lo, int hi, bool landMode, Eval&& 
     auto first = eval(preferred - now, true);
     choice.firstOk = first.ok;
     float riskLine = landMode ? kRiskClearLand : kRiskClear;
-    if (first.ok && (first.clearance >= riskLine || !first.resolved)) return choice;
+    if (first.ok && (first.aborted || first.clearance >= riskLine || !first.resolved)) return choice;
 
     auto search = [&](int a, int b, auto&& accept, int& outTick) {
         bool found = false;
         float bestScore = -1e9f;
         int span = std::max(preferred - a, b - preferred);
         bool stopSide[2] = { false, false };
-        for (int d = 1; d <= span; d++) {
+        for (int d = 1; d <= span && !outOfTime(); d++) {
             for (int side = 0; side < 2; side++) {
                 if (stopSide[side]) continue;
                 int t = side == 0 ? preferred + d : preferred - d;
                 if (t < a || t > b) continue;
                 auto o = eval(t - now, true);
+                if (o.aborted) break;
                 if (o.idleDeath && side == 0) stopSide[0] = true;
                 if (!accept(o)) continue;
                 float score = o.clearance + static_cast<float>(o.survivors) + (o.resolved ? 5.f : 0.f) - kShiftPenalty * d;
@@ -1238,7 +1289,7 @@ int pickLateTicks(PlayLayer* pl, Targets const& t, Channel const& ch, int now, b
     c.noOffset = true;
     CCPoint current = t.players[0]->getPosition();
 
-    for (int j = 1; j <= cfg.smartWindow; j++) {
+    for (int j = 1; j <= cfg.smartWindow && !outOfTime(); j++) {
         int u = now - j;
         if (u < g.lastAnyInput) break;
         bool usable = true;
@@ -1268,6 +1319,7 @@ int pickLateTicks(PlayLayer* pl, Targets const& t, Channel const& ch, int now, b
 
         c.futureFrom = j;
         auto o = press ? evalPress(c, 0, false) : evalRelease(c, 0, false);
+        if (o.aborted) break;
         if (o.ok) return j;
     }
     return 0;
@@ -1415,6 +1467,7 @@ void showIndicator(std::string const& text) {
 
 void drawDecision(PlayLayer* pl, Targets const& t, Channel const& ch, int now, Config const& cfg, int userTick, int chosenTick, bool press) {
     if (!g.decisionDraw) return;
+    Budget budget(cfg.budgetMs);
     auto c = liveContext(pl, t, ch, now, cfg);
     Mode m = c.mode;
     int h = holdTicks(m);
@@ -1452,6 +1505,7 @@ void drawLiveProjection(PlayLayer* pl) {
     if (!p1 || p1->m_isDead || pl->m_playerDied || pl->m_levelEndAnimationStarted) return;
 
     auto cfg = readConfig();
+    Budget budget(cfg.budgetMs);
     auto t = targetsFor(pl, true);
     captureLive(t);
     Snapshot const* sources[2] = { &g.live[0], &g.live[1] };
@@ -1508,9 +1562,10 @@ void processAdjust(GJBaseGameLayer* layer, PlayLayer* pl) {
         auto t = targetsFor(pl, ch.adjustIsPlayer1);
         bool release = !t.players[0] || !canAssist(pl, t) || g.updates >= ch.adjustDeadline || modeOf(t.players[0]) != Mode::Wave;
         if (!release) {
+            Budget budget(cfg.budgetMs);
             auto c = liveContext(pl, t, ch, g.updates, cfg);
             auto o = evalRelease(c, 0, true);
-            release = o.ok && o.clearance >= kRiskClear;
+            release = o.ok && !o.aborted && o.clearance >= kRiskClear;
         }
         if (!release) continue;
         ch.adjusting = false;
@@ -1714,20 +1769,24 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
             Choice choice{ natural, true, true };
             bool assist = cfg.enabled && canAssist(pl, targets);
             int preferred = natural;
-            if (assist) {
-                preferred = natural + leadFor(cfg, m);
-                choice = choosePress(pl, targets, ch, now, cfg);
+            int late = 0;
+            {
+                Budget budget(cfg.budgetMs);
+                if (assist) {
+                    preferred = natural + leadFor(cfg, m);
+                    choice = choosePress(pl, targets, ch, now, cfg);
+                }
+                if (assist && !choice.found && natural == now) {
+                    late = pickLateTicks(pl, targets, ch, now, true, cfg);
+                }
             }
 
-            if (assist && !choice.found && natural == now) {
-                int late = pickLateTicks(pl, targets, ch, now, true, cfg);
-                if (late > 0) {
-                    applyLate(pl, targets, late, true, isPlayer1);
-                    ch.shift = 0;
-                    ch.firePressTick = now - late;
-                    report(cfg, true, fmt::format("{} late fix -{}ms", modeName(m), ticksToMs(late)));
-                    return;
-                }
+            if (late > 0) {
+                applyLate(pl, targets, late, true, isPlayer1);
+                ch.shift = 0;
+                ch.firePressTick = now - late;
+                report(cfg, true, fmt::format("{} late fix -{}ms", modeName(m), ticksToMs(late)));
+                return;
             }
 
             bool moved = choice.tick != preferred;
@@ -1761,16 +1820,19 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
         Choice choice{ target, true, true };
         bool assist = cfg.enabled && canAssist(pl, targets);
         Mode m = modeOf(targets.players[0]);
-        if (assist) choice = chooseRelease(pl, targets, ch, now, target, cfg);
-
-        if (assist && !choice.found && target == now && natural == now) {
-            int late = pickLateTicks(pl, targets, ch, now, false, cfg);
-            if (late > 0) {
-                applyLate(pl, targets, late, false, isPlayer1);
-                ch.shift = 0;
-                report(cfg, true, fmt::format("{} late release -{}ms", modeName(m), ticksToMs(late)));
-                return;
+        int late = 0;
+        {
+            Budget budget(cfg.budgetMs);
+            if (assist) choice = chooseRelease(pl, targets, ch, now, target, cfg);
+            if (assist && !choice.found && target == now && natural == now) {
+                late = pickLateTicks(pl, targets, ch, now, false, cfg);
             }
+        }
+        if (late > 0) {
+            applyLate(pl, targets, late, false, isPlayer1);
+            ch.shift = 0;
+            report(cfg, true, fmt::format("{} late release -{}ms", modeName(m), ticksToMs(late)));
+            return;
         }
 
         bool earlierFix = choice.found && choice.tick <= target;

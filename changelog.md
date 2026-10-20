@@ -1,3 +1,8 @@
+# v1.3.2
+- Fixed robot clicks lagging the game hard enough to cut your hold short
+- Every click now has a time limit (Max Think Time, 5ms by default). If the check runs out of time your input just goes through unchanged
+- Robot checks try fewer hold lengths
+
 # v1.3.1
 - Fixed cube jumps getting pushed later on long drops (overshooting the block you meant to land on)
 - Cube, ball and robot checks now follow the jump until you land instead of stopping mid-air
