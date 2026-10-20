@@ -16,6 +16,9 @@
 #include <utility>
 #include <vector>
 #include <chrono>
+#include <cstring>
+#include <set>
+#include <string>
 
 using namespace geode::prelude;
 
@@ -229,6 +232,451 @@ using namespace geode::prelude;
     X(m_ringRelatedSet) \
     X(m_touchedRings)
 
+
+#define TA_BGL_SCALARS(X) \
+    X(m_playbackMode) \
+    X(m_lowDetailMode) \
+    X(m_extraLDM) \
+    X(m_ignoreDamage) \
+    X(m_enable22Changes) \
+    X(m_allowStaticRotate) \
+    X(m_fixNegativeScale) \
+    X(m_startingFromBeginning) \
+    X(m_visibleObjectsCount) \
+    X(m_visibleObjectsIndex) \
+    X(m_visibleObjects2Count) \
+    X(m_visibleObjects2Index) \
+    X(m_unked0) \
+    X(m_disabledObjectsCount) \
+    X(m_unked8) \
+    X(m_areaObjectsCount) \
+    X(m_processedAreaObjectsCount) \
+    X(m_unkee4) \
+    X(m_disabledObjectsIndex) \
+    X(m_unkeec) \
+    X(m_areaObjectsIndex) \
+    X(m_processedAreaObjectsIndex) \
+    X(m_lastUsedLinkedID) \
+    X(m_increasedLayerCapacity) \
+    X(m_enterEasingValuesIndex) \
+    X(m_dualTouchTrigger) \
+    X(m_clicks) \
+    X(m_attempts) \
+    X(m_jumping) \
+    X(m_leftSectionIndex) \
+    X(m_rightSectionIndex) \
+    X(m_bottomSectionIndex) \
+    X(m_topSectionIndex) \
+    X(m_isEditor) \
+    X(m_blending) \
+    X(m_isPlatformer) \
+    X(m_particleCount) \
+    X(m_customParticleCount) \
+    X(m_particleSystemLimit) \
+    X(m_activeGradients) \
+    X(m_objectsDeactivated) \
+    X(m_areaObjectsUpdated) \
+    X(m_useReplay) \
+    X(m_unk3189) \
+    X(m_solidCollisionObjectsCount) \
+    X(m_solidCollisionObjectsIndex) \
+    X(m_hazardCollisionObjectsCount) \
+    X(m_hazardCollisionObjectsIndex) \
+    X(m_isPracticeMode) \
+    X(m_practiceMusicSync) \
+    X(m_loadingProgress) \
+    X(m_unk31f8) \
+    X(m_cameraFlip) \
+    X(m_cameraWidthOffset) \
+    X(m_cameraHeightOffset) \
+    X(m_updateGroundShadows) \
+    X(m_levelLength) \
+    X(m_resetActiveObjects) \
+    X(m_skipArtReload) \
+    X(m_isTestMode) \
+    X(m_freezeStartCamera) \
+    X(m_unk322a) \
+    X(m_cameraUnzoomedHeightOffset) \
+    X(m_targetCameraHeightOffset) \
+    X(m_calculateTargetHeightOffset) \
+    X(m_staticCameraShake) \
+    X(m_skipCameraShake) \
+    X(m_playerDied) \
+    X(m_extraDelta) \
+    X(m_started) \
+    X(m_unk3251) \
+    X(m_cameraWidth) \
+    X(m_cameraHeight) \
+    X(m_cameraUnzoomedX) \
+    X(m_halfCameraWidth) \
+    X(m_activeObjectsCount) \
+    X(m_activeObjectsIndex) \
+    X(m_resumeTimer) \
+    X(m_recordInputs) \
+    X(m_unk32a1) \
+    X(m_unk32a2) \
+    X(m_unk32a3) \
+    X(m_unk32a4) \
+    X(m_unk32d0) \
+    X(m_unk32d4) \
+    X(m_randomSeed) \
+    X(m_unk32e0) \
+    X(m_replayRandSeed) \
+    X(m_unk32ec) \
+    X(m_currentStep) \
+    X(m_unk3370) \
+    X(m_queuedRecordedButtonsSize) \
+    X(m_savedAttempts) \
+    X(m_portalIndicators) \
+    X(m_orbIndicators) \
+    X(m_unk3380) \
+    X(m_hideGround) \
+    X(m_keepGroupParents) \
+    X(m_keyframeGroup) \
+    X(m_timePlayed) \
+    X(m_tickIndex) \
+    X(m_clickIndex) \
+    X(m_levelEndAnimationStarted) \
+    X(m_points) \
+    X(m_calcNonEffectObjectsSize) \
+    X(m_calcCollisionBlockObjectsSize) \
+    X(m_calcCollisionBlockObjects2Size) \
+    X(m_sectionXFactor) \
+    X(m_sectionYFactor) \
+    X(m_maxGameplayY) \
+    X(m_songTriggerInterval) \
+    X(m_showAudioVisualizer) \
+    X(m_areaMovedCount) \
+    X(m_areaScaledCount) \
+    X(m_areaRotatedCount) \
+    X(m_areaColorCount) \
+    X(m_areaMovedCountTotal) \
+    X(m_areaScaledCountTotal) \
+    X(m_areaRotatedCountTotal) \
+    X(m_areaColorCountTotal) \
+    X(m_movedCount) \
+    X(m_scaledCount) \
+    X(m_rotatedCount) \
+    X(m_followedCount) \
+    X(m_areaMovedCountDisplay) \
+    X(m_areaScaledCountDisplay) \
+    X(m_areaRotatedCountDisplay) \
+    X(m_areaColorCountDisplay) \
+    X(m_areaMovedCountTotalDisplay) \
+    X(m_areaScaledCountTotalDisplay) \
+    X(m_areaRotatedCountTotalDisplay) \
+    X(m_areaColorCountTotalDisplay) \
+    X(m_movedCountDisplay) \
+    X(m_scaledCountDisplay) \
+    X(m_rotatedCountDisplay) \
+    X(m_followedCountDisplay) \
+    X(m_loadingStartPosition) \
+    X(m_processingAudioTriggers) \
+    X(m_audioPaused) \
+    X(m_startOptimization) \
+    X(m_isDebugDrawEnabled) \
+    X(m_disablePlayerHitbox) \
+    X(m_hitboxesOnDeath) \
+    X(m_timestamp) \
+    X(m_isBetweenSteps) \
+    X(m_clickBetweenSteps) \
+    X(m_clickOnSteps)
+#define TA_PL_SCALARS(X) \
+    X(m_unk36c8) \
+    X(m_unk36cc) \
+    X(m_unk36cd) \
+    X(m_unk36ce) \
+    X(m_unk36cf) \
+    X(m_damageVerified) \
+    X(m_passedIntegrity) \
+    X(m_objectsCreated) \
+    X(m_unk3768) \
+    X(m_platformerRestart) \
+    X(m_unk376d) \
+    X(m_isIgnoreDamageEnabled) \
+    X(m_unk3778) \
+    X(m_unk377c) \
+    X(m_unk3780) \
+    X(m_unk3784) \
+    X(m_unk3788) \
+    X(m_unk378c) \
+    X(m_endChecked) \
+    X(m_endXPosition) \
+    X(m_unk37b0) \
+    X(m_unk37b1) \
+    X(m_enterEffectPosition) \
+    X(m_isSilent) \
+    X(m_unk37cc) \
+    X(m_unk37e0) \
+    X(m_pulseRodIndex) \
+    X(m_maxObjectX) \
+    X(m_decimalPercentage) \
+    X(m_hintShown) \
+    X(m_progressWidth) \
+    X(m_progressHeight) \
+    X(m_totalGravityEffects) \
+    X(m_activeGravityEffects) \
+    X(m_gravityEffectIndex) \
+    X(m_doNot) \
+    X(m_unk383c) \
+    X(m_skipAudioStep) \
+    X(m_jumps) \
+    X(m_hasJumped) \
+    X(m_uncommittedJumps) \
+    X(m_showLeaderboardPercentage) \
+    X(m_hasCompletedLevel) \
+    X(m_inResetDelay) \
+    X(m_lastAttemptPercent) \
+    X(m_endLayerStars) \
+    X(m_orbs) \
+    X(m_diamonds) \
+    X(m_secretKey) \
+    X(m_recordingStopped) \
+    X(m_unk38b0) \
+    X(m_unk38b8) \
+    X(m_unk38c0) \
+    X(m_unk38c8) \
+    X(m_unk38cc) \
+    X(m_unk38d0) \
+    X(m_attemptTime) \
+    X(m_bestAttemptTime) \
+    X(m_pauseTime) \
+    X(m_currentTime) \
+    X(m_pauseDelta) \
+    X(m_unk3900) \
+    X(m_glitterEnabled) \
+    X(m_bgEffectDisabled) \
+    X(m_unk3906) \
+    X(m_isPaused) \
+    X(m_disableGravityEffect) \
+    X(m_unk3918) \
+    X(m_unk3920) \
+    X(m_nextColorKey) \
+    X(m_tryPlaceCheckpoint) \
+    X(m_musicPrepared) \
+    X(m_endPosition)
+#define TA_GS_SCALARS(X) \
+    X(m_cameraZoom) \
+    X(m_targetCameraZoom) \
+    X(m_cameraOffset) \
+    X(m_unkPoint1) \
+    X(m_unkPoint2) \
+    X(m_unkPoint3) \
+    X(m_cameraDeltaPosition) \
+    X(m_unkPoint5) \
+    X(m_unkPoint6) \
+    X(m_unkPoint7) \
+    X(m_unkPoint8) \
+    X(m_unkPoint9) \
+    X(m_unkPoint10) \
+    X(m_unkPoint11) \
+    X(m_unkPoint12) \
+    X(m_unkPoint13) \
+    X(m_unkPoint14) \
+    X(m_unkPoint15) \
+    X(m_unkPoint16) \
+    X(m_unkPoint17) \
+    X(m_unkPoint18) \
+    X(m_unkPoint19) \
+    X(m_unkPoint20) \
+    X(m_unkPoint21) \
+    X(m_unkPoint22) \
+    X(m_unkPoint23) \
+    X(m_unkPoint24) \
+    X(m_unkPoint25) \
+    X(m_unkPoint26) \
+    X(m_unkPoint27) \
+    X(m_unkPoint28) \
+    X(m_unkPoint29) \
+    X(m_unkBool1) \
+    X(m_unkInt1) \
+    X(m_unkBool2) \
+    X(m_unkInt2) \
+    X(m_unkBool3) \
+    X(m_unkPoint30) \
+    X(m_middleGroundOffsetY) \
+    X(m_unkInt3) \
+    X(m_unkInt4) \
+    X(m_unkBool4) \
+    X(m_unkBool5) \
+    X(m_cameraPadding) \
+    X(m_cameraEasing) \
+    X(m_unkInt5) \
+    X(m_unkInt6) \
+    X(m_unkInt7) \
+    X(m_unkInt8) \
+    X(m_unkInt9) \
+    X(m_unkInt10) \
+    X(m_lastModeHeight) \
+    X(m_lastCameraZoom) \
+    X(m_unkUint1) \
+    X(m_portalY) \
+    X(m_unkBool6) \
+    X(m_gravityRelated) \
+    X(m_unkInt12) \
+    X(m_unkInt13) \
+    X(m_unkInt14) \
+    X(m_unkInt15) \
+    X(m_unkBool7) \
+    X(m_isFreeMode) \
+    X(m_disableCameraGridSnap) \
+    X(m_backgroundSpeedX) \
+    X(m_backgroundSpeedY) \
+    X(m_middlegroundSpeedX) \
+    X(m_middlegroundSpeedY) \
+    X(m_cameraAngle) \
+    X(m_targetCameraAngle) \
+    X(m_playerStreakBlend) \
+    X(m_timeWarp) \
+    X(m_queuedTimeWarp) \
+    X(m_timeWarpRelated) \
+    X(m_currentChannel) \
+    X(m_rotateChannel) \
+    X(m_totalTime) \
+    X(m_levelTime) \
+    X(m_unkDouble3) \
+    X(m_commandIndex) \
+    X(m_unkUint3) \
+    X(m_currentProgress) \
+    X(m_unkUint4) \
+    X(m_unkUint5) \
+    X(m_unkUint6) \
+    X(m_unkUint7) \
+    X(m_lastActivatedPortal1) \
+    X(m_lastActivatedPortal2) \
+    X(m_cameraPosition) \
+    X(m_isFlipped) \
+    X(m_levelFlipProgress) \
+    X(m_inSecondHalfOfFlipAnimation) \
+    X(m_isFlipping) \
+    X(m_isDualMode) \
+    X(m_dualAnimationProgress) \
+    X(m_cameraEdgeValue0) \
+    X(m_cameraEdgeValue1) \
+    X(m_cameraEdgeValue2) \
+    X(m_cameraEdgeValue3) \
+    X(m_unkUint10) \
+    X(m_unkUint11) \
+    X(m_unkUint12) \
+    X(m_cameraStepDiff) \
+    X(m_backgroundWidth) \
+    X(m_timeModRelated) \
+    X(m_timeModRelated2) \
+    X(m_unkUint13) \
+    X(m_unkPoint32) \
+    X(m_cameraLastPosition) \
+    X(m_unkBool20) \
+    X(m_unkBool21) \
+    X(m_audioOnDeath) \
+    X(m_respawnTime) \
+    X(m_noDeathSFX) \
+    X(m_cameraShakeEnabled) \
+    X(m_cameraShakeDuration) \
+    X(m_cameraShakeStrength) \
+    X(m_cameraShakeInterval) \
+    X(m_lastShakeTime) \
+    X(m_unkPoint34) \
+    X(m_dualRelated) \
+    X(m_unkBool27) \
+    X(m_instantExitStaticCameraX) \
+    X(m_instantExitStaticCameraY) \
+    X(m_unkUint17) \
+    X(m_unkBool30) \
+    X(m_background) \
+    X(m_ground) \
+    X(m_middleground) \
+    X(m_unlinkDualGravity) \
+    X(m_points) \
+    X(m_hasObtainedPoints) \
+    X(m_pauseCounter) \
+    X(m_pauseBufferTimer)
+#define TA_BGL_SIZES(X) \
+    X(m_activeSfxTriggers) \
+    X(m_unk8a0) \
+    X(m_spawnRemapTriggers) \
+    X(m_uiObjectPositions) \
+    X(m_unkdd8) \
+    X(m_disabledObjects) \
+    X(m_unke08) \
+    X(m_areaObjects) \
+    X(m_processedAreaObjects) \
+    X(m_visibilityGroups) \
+    X(m_visibleObjects) \
+    X(m_visibleObjects2) \
+    X(m_groups) \
+    X(m_staticGroups) \
+    X(m_optimizedGroups) \
+    X(m_targetGroups) \
+    X(m_labelObjects) \
+    X(m_timeLabelObjects) \
+    X(m_destroyObjectValues) \
+    X(m_enterEasingValues) \
+    X(m_enterEasingIndices) \
+    X(m_particleCountToParticleString) \
+    X(m_customParticlesUIDs) \
+    X(m_solidCollisionObjects) \
+    X(m_hazardCollisionObjects) \
+    X(m_sequenceTriggers) \
+    X(m_activeObjects) \
+    X(m_queuedButtons) \
+    X(m_queuedRecordedButtons) \
+    X(m_unk3330) \
+    X(m_queuedReplayButtons) \
+    X(m_unk3390) \
+    X(m_unk3340) \
+    X(m_unk3358) \
+    X(m_unk3388) \
+    X(m_unk33a0) \
+    X(m_savePositionObjects) \
+    X(m_savePositionValues) \
+    X(m_sections) \
+    X(m_nonEffectObjects) \
+    X(m_collisionBlockSections) \
+    X(m_calcNonEffectObjects) \
+    X(m_calcCollisionBlockObjects) \
+    X(m_calcCollisionBlockObjects2) \
+    X(m_sectionSizes) \
+    X(m_nonEffectObjectsSizes) \
+    X(m_collisionBlockSectionSizes) \
+    X(m_nonEffectObjectsFlags) \
+    X(m_stickyGroups)
+#define TA_PL_SIZES(X) \
+    X(m_objectStrings) \
+    X(m_dynamicSaveObjects) \
+    X(m_activeSaveObjects1) \
+    X(m_activeSaveObjects2) \
+    X(m_dynamicSaveObjects2) \
+    X(m_blendingColors) \
+    X(m_keyColors) \
+    X(m_keyOpacities)
+#define TA_GS_SIZES(X) \
+    X(m_spawnChannelRelated0) \
+    X(m_spawnChannelRelated1) \
+    X(m_tweenActions) \
+    X(m_gameObjectPhysics) \
+    X(m_unkVecFloat1) \
+    X(m_activatedObjectIDs) \
+    X(m_stateObjects) \
+    X(m_unkMapPairGJGameEventIntVectorEventTriggerInstance) \
+    X(m_unkMapPairGJGameEventIntInt) \
+    X(m_enterEffectInstanceVectors) \
+    X(m_exitEffectInstanceVectors) \
+    X(m_enterChannelMap) \
+    X(m_exitChannelMap) \
+    X(m_moveEffectInstances) \
+    X(m_rotateEffectInstances) \
+    X(m_scaleEffectInstances) \
+    X(m_fadeEffectInstances) \
+    X(m_tintEffectInstances) \
+    X(m_unsortedAreaEffects) \
+    X(m_advanceFollowInstances) \
+    X(m_dynamicMoveActions) \
+    X(m_dynamicRotateActions) \
+    X(m_unkUMap8) \
+    X(m_proximityVolumeRelated) \
+    X(m_songChannelStates) \
+    X(m_songTriggerStateVectors) \
+    X(m_sfxTriggerStates)
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -421,7 +869,18 @@ struct EvalContext {
 struct State {
     PlayLayer* layer = nullptr;
     PlayerObject* fakes[2] = { nullptr, nullptr };
+    std::set<std::string> simTouched;
+    std::set<std::string> simTouchedLogged;
+    bool saveCalled = false;
+    int savePercent = 0;
+    bool saveChk = false;
+    bool diagDeath = false;
+    bool deathVerified = false;
+    bool deathIntegrity = false;
+    bool deathTestMode = false;
+    bool deathPractice = false;
     CCLabelBMFont* label = nullptr;
+    CCLabelBMFont* diagLabel = nullptr;
     CCDrawNode* liveDraw = nullptr;
     CCDrawNode* decisionDraw = nullptr;
     Channel channels[2];
@@ -496,100 +955,128 @@ Config readConfig() {
     return c;
 }
 
+void save(Snapshot& s, PlayerObject* p, bool heavy);
+
+void noteTouched(char const* where, char const* name) {
+    std::string key = fmt::format("{}.{}", where, name);
+    g.simTouched.insert(key);
+    if (g.simTouchedLogged.insert(key).second) log::warn("check changed {}, put it back", key);
+}
+
+template <class T>
+bool sameBytes(T const& a, T const& b) {
+    return std::memcmp(&a, &b, sizeof(T)) == 0;
+}
+
 struct GameGuard {
     PlayLayer* pl = nullptr;
+#define TA_D(f) Plain<decltype(std::declval<PlayLayer&>().f)> bgl_##f{};
+    TA_BGL_SCALARS(TA_D)
+#undef TA_D
+#define TA_D(f) Plain<decltype(std::declval<PlayLayer&>().f)> pl_##f{};
+    TA_PL_SCALARS(TA_D)
+#undef TA_D
+#define TA_D(f) Plain<decltype(std::declval<GJGameState&>().f)> gs_##f{};
+    TA_GS_SCALARS(TA_D)
+#undef TA_D
+#define TA_D(f) size_t bglsz_##f = 0;
+    TA_BGL_SIZES(TA_D)
+#undef TA_D
+#define TA_D(f) size_t plsz_##f = 0;
+    TA_PL_SIZES(TA_D)
+#undef TA_D
+#define TA_D(f) size_t gssz_##f = 0;
+    TA_GS_SIZES(TA_D)
+#undef TA_D
     gd::map<std::pair<int, int>, int> activated;
-    double totalTime = 0.0;
-    double levelTime = 0.0;
-    double unkDouble3 = 0.0;
-    unsigned int commandIndex = 0;
-    float unkUint3 = 0.f;
-    unsigned int currentProgress = 0;
-    int unkUint4 = 0;
-    int unkUint5 = 0;
-    int unkUint6 = 0;
-    int unkUint7 = 0;
-    int unkUint8 = 0;
-    GameObject* portal1 = nullptr;
-    GameObject* portal2 = nullptr;
-    bool damageVerified = false;
-    bool passedIntegrity = false;
-    int objectsCreated = 0;
-    int jumps = 0;
-    bool hasJumped = false;
-    int uncommittedJumps = 0;
-    bool playerDied = false;
-    bool tryPlaceCheckpoint = false;
-    int clicks = 0;
-    int attempts = 0;
+    gd::unordered_map<int, GameObjectPhysics> physics;
+    gd::unordered_map<int, GJValueTween> tweens;
+    int idCounter = 0;
+    PlayerObject* players[2] = { nullptr, nullptr };
+    Snapshot playerState[2];
 
     void capture(PlayLayer* layer) {
         pl = layer;
         if (!pl) return;
         auto& gs = pl->m_gameState;
+#define TA_C(f) bgl_##f = pl->f;
+        TA_BGL_SCALARS(TA_C)
+#undef TA_C
+#define TA_C(f) pl_##f = pl->f;
+        TA_PL_SCALARS(TA_C)
+#undef TA_C
+#define TA_C(f) gs_##f = gs.f;
+        TA_GS_SCALARS(TA_C)
+#undef TA_C
+#define TA_C(f) bglsz_##f = pl->f.size();
+        TA_BGL_SIZES(TA_C)
+#undef TA_C
+#define TA_C(f) plsz_##f = pl->f.size();
+        TA_PL_SIZES(TA_C)
+#undef TA_C
+#define TA_C(f) gssz_##f = gs.f.size();
+        TA_GS_SIZES(TA_C)
+#undef TA_C
         activated = gs.m_activatedObjectIDs;
-        totalTime = gs.m_totalTime;
-        levelTime = gs.m_levelTime;
-        unkDouble3 = gs.m_unkDouble3;
-        commandIndex = gs.m_commandIndex;
-        unkUint3 = gs.m_unkUint3;
-        currentProgress = gs.m_currentProgress;
-        unkUint4 = gs.m_unkUint4;
-        unkUint5 = gs.m_unkUint5;
-        unkUint6 = gs.m_unkUint6;
-        unkUint7 = gs.m_unkUint7;
-        unkUint8 = gs.m_unkUint8;
-        portal1 = gs.m_lastActivatedPortal1;
-        portal2 = gs.m_lastActivatedPortal2;
-        damageVerified = pl->m_damageVerified;
-        passedIntegrity = pl->m_passedIntegrity;
-        objectsCreated = pl->m_objectsCreated;
-        jumps = pl->m_jumps;
-        hasJumped = pl->m_hasJumped;
-        uncommittedJumps = pl->m_uncommittedJumps;
-        playerDied = pl->m_playerDied;
-        tryPlaceCheckpoint = pl->m_tryPlaceCheckpoint;
-        clicks = pl->m_clicks;
-        attempts = pl->m_attempts;
+        physics = gs.m_gameObjectPhysics;
+        tweens = gs.m_tweenActions;
+        idCounter = *reinterpret_cast<int*>(geode::base::get() + 0x6ba158);
+        players[0] = pl->m_player1;
+        players[1] = pl->m_player2;
+        for (int i = 0; i < 2; i++) {
+            if (players[i]) save(playerState[i], players[i], false);
+        }
     }
 
     void restore() {
         if (!pl) return;
         auto& gs = pl->m_gameState;
-        gs.m_activatedObjectIDs = activated;
-        gs.m_totalTime = totalTime;
-        gs.m_levelTime = levelTime;
-        gs.m_unkDouble3 = unkDouble3;
-        gs.m_commandIndex = commandIndex;
-        gs.m_unkUint3 = unkUint3;
-        gs.m_currentProgress = currentProgress;
-        gs.m_unkUint4 = unkUint4;
-        gs.m_unkUint5 = unkUint5;
-        gs.m_unkUint6 = unkUint6;
-        gs.m_unkUint7 = unkUint7;
-        gs.m_unkUint8 = unkUint8;
-        gs.m_lastActivatedPortal1 = portal1;
-        gs.m_lastActivatedPortal2 = portal2;
-        pl->m_damageVerified = damageVerified;
-        pl->m_passedIntegrity = passedIntegrity;
-        pl->m_objectsCreated = objectsCreated;
-        pl->m_jumps = jumps;
-        pl->m_hasJumped = hasJumped;
-        pl->m_uncommittedJumps = uncommittedJumps;
-        pl->m_playerDied = playerDied;
-        pl->m_tryPlaceCheckpoint = tryPlaceCheckpoint;
-        pl->m_clicks = clicks;
-        pl->m_attempts = attempts;
+#define TA_R(f) if (!sameBytes(bgl_##f, pl->f)) { noteTouched("layer", #f); pl->f = bgl_##f; }
+        TA_BGL_SCALARS(TA_R)
+#undef TA_R
+#define TA_R(f) if (!sameBytes(pl_##f, pl->f)) { noteTouched("play", #f); pl->f = pl_##f; }
+        TA_PL_SCALARS(TA_R)
+#undef TA_R
+#define TA_R(f) if (!sameBytes(gs_##f, gs.f)) { noteTouched("state", #f); gs.f = gs_##f; }
+        TA_GS_SCALARS(TA_R)
+#undef TA_R
+#define TA_R(f) if (bglsz_##f != pl->f.size()) noteTouched("layer-list", #f);
+        TA_BGL_SIZES(TA_R)
+#undef TA_R
+#define TA_R(f) if (plsz_##f != pl->f.size()) noteTouched("play-list", #f);
+        TA_PL_SIZES(TA_R)
+#undef TA_R
+#define TA_R(f) if (gssz_##f != gs.f.size()) noteTouched("state-list", #f);
+        TA_GS_SIZES(TA_R)
+#undef TA_R
+        if (gs.m_activatedObjectIDs != activated) {
+            noteTouched("state", "m_activatedObjectIDs");
+            gs.m_activatedObjectIDs = activated;
+        }
+        if (gs.m_gameObjectPhysics.size() != physics.size()) noteTouched("state", "m_gameObjectPhysics");
+        gs.m_gameObjectPhysics = physics;
+        if (gs.m_tweenActions.size() != tweens.size()) noteTouched("state", "m_tweenActions");
+        gs.m_tweenActions = tweens;
+        int nowCounter = *reinterpret_cast<int*>(geode::base::get() + 0x6ba158);
+        if (nowCounter != idCounter) noteTouched("game", "uniqueIDCounter");
+        for (int i = 0; i < 2; i++) {
+            auto p = players[i];
+            if (!p || (i == 0 ? pl->m_player1 : pl->m_player2) != p) continue;
+            auto& st = playerState[i];
+#define TA_R(f) if (!sameBytes(st.f, Plain<decltype(p->f)>(p->f))) { noteTouched("player", #f); p->f = st.f; }
+            TA_LIGHT_FIELDS(TA_R)
+#undef TA_R
+        }
         pl = nullptr;
     }
 };
 
 struct Budget {
     explicit Budget(double ms) {
+        if (g.layer && g.ready) guard.capture(g.layer);
         g.budgetActive = true;
         g.budgetHit = false;
         g.budgetEnd = Clock::now() + std::chrono::microseconds(static_cast<int64_t>(ms * 1000.0));
-        if (g.layer && g.ready) guard.capture(g.layer);
     }
     ~Budget() {
         guard.restore();
@@ -1803,6 +2290,33 @@ void dispatch(GJBaseGameLayer* layer, Channel& ch, Queued const& q) {
     sendButton(layer, q.down, q.isPlayer1);
 }
 
+void showDiag(PlayLayer* pl, bool completed) {
+    if (!g.debugOn || !g.diagLabel) return;
+    std::string touched;
+    int shown = 0;
+    for (auto const& name : g.simTouched) {
+        if (shown == 4) {
+            touched += fmt::format(" +{}", g.simTouched.size() - 4);
+            break;
+        }
+        touched += (shown ? ", " : "") + name;
+        shown++;
+    }
+    if (touched.empty()) touched = "nothing";
+    bool verified = completed ? pl->m_damageVerified : g.deathVerified;
+    bool integrity = completed ? pl->m_passedIntegrity : g.deathIntegrity;
+    bool testMode = completed ? pl->m_isTestMode : g.deathTestMode;
+    bool practice = completed ? pl->m_isPracticeMode : g.deathPractice;
+    std::string save = g.saveCalled ? fmt::format("save {}% chk {}", g.savePercent, g.saveChk ? 1 : 0) : std::string("save not called");
+    std::string text = fmt::format("{}\nverified {} integrity {} test {} practice {}\nchecks changed: {}",
+        save, verified ? 1 : 0, integrity ? 1 : 0, testMode ? 1 : 0, practice ? 1 : 0, touched);
+    log::info("save check: {}", text);
+    g.diagLabel->stopAllActions();
+    g.diagLabel->setString(text.c_str());
+    g.diagLabel->setOpacity(230);
+    g.diagLabel->runAction(CCSequence::create(CCDelayTime::create(6.f), CCFadeOut::create(0.5f), nullptr));
+}
+
 void report(Config const& cfg, bool changed, std::string const& text) {
     if (changed) g.changedThisAttempt = true;
     if ((cfg.debug || (cfg.indicator && changed)) && !text.empty()) showIndicator(text);
@@ -2227,6 +2741,7 @@ class $modify(TAPlayLayer, PlayLayer) {
         g.fakes[0] = nullptr;
         g.fakes[1] = nullptr;
         g.label = nullptr;
+        g.diagLabel = nullptr;
         g.liveDraw = nullptr;
         g.decisionDraw = nullptr;
         g.simulating = false;
@@ -2296,6 +2811,16 @@ class $modify(TAPlayLayer, PlayLayer) {
             this->addChild(label, 1000);
             g.label = label;
         }
+        g.diagLabel = nullptr;
+        if (mod->getSettingValue<bool>("debug-overlay")) {
+            auto diag = CCLabelBMFont::create("", "bigFont.fnt");
+            diag->setAnchorPoint({ 0.f, 0.f });
+            diag->setScale(0.3f);
+            diag->setPosition({ 6.f, 22.f });
+            diag->setOpacity(0);
+            this->addChild(diag, 1000);
+            g.diagLabel = diag;
+        }
 
         g.smartOn = mod->getSettingValue<bool>("smart-predict");
         g.debugOn = mod->getSettingValue<bool>("debug-overlay");
@@ -2316,6 +2841,10 @@ class $modify(TAPlayLayer, PlayLayer) {
 
     void resetLevel() {
         bool ready = layerReady(this);
+        if (ready && g.diagDeath) showDiag(this, false);
+        g.diagDeath = false;
+        g.saveCalled = false;
+        g.simTouched.clear();
         if (ready) flushAll(this);
         endAllSmooth(ready);
         PlayLayer::resetLevel();
@@ -2345,6 +2874,7 @@ class $modify(TAPlayLayer, PlayLayer) {
         g.fakes[0] = nullptr;
         g.fakes[1] = nullptr;
         g.label = nullptr;
+        g.diagLabel = nullptr;
         g.liveDraw = nullptr;
         g.decisionDraw = nullptr;
         endAllSmooth(false);
@@ -2365,6 +2895,13 @@ class $modify(TAPlayLayer, PlayLayer) {
             return;
         }
         PlayLayer::destroyPlayer(player, object);
+        if (layerReady(this) && player && player->m_isDead && !g.diagDeath) {
+            g.diagDeath = true;
+            g.deathVerified = m_damageVerified;
+            g.deathIntegrity = m_passedIntegrity;
+            g.deathTestMode = m_isTestMode;
+            g.deathPractice = m_isPracticeMode;
+        }
     }
 
     void updateVerifyDamage() {
@@ -2391,6 +2928,7 @@ class $modify(TAPlayLayer, PlayLayer) {
         if (block) m_isTestMode = true;
         PlayLayer::levelComplete();
         m_isTestMode = testMode;
+        if (layerReady(this)) showDiag(this, true);
     }
 
     void showNewBest(bool newReward, int orbs, int diamonds, bool demonKey, bool noRetry, bool noTitle) {
@@ -2508,6 +3046,11 @@ class $modify(TAGameObject, GameObject) {
 class $modify(TAGameLevel, GJGameLevel) {
     void savePercentage(int percent, bool isPracticeMode, int clicks, int attempts, bool isChkValid) {
         if (PlayLayer::get() && shouldBlockProgress()) return;
+        if (PlayLayer::get() && !isPracticeMode) {
+            g.saveCalled = true;
+            g.savePercent = percent;
+            g.saveChk = isChkValid;
+        }
         GJGameLevel::savePercentage(percent, isPracticeMode, clicks, attempts, isChkValid);
     }
 };

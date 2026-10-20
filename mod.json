@@ -5,7 +5,7 @@
 	},
 	"id": "assortedfruits.timing-assist",
 	"name": "Timing Assist",
-	"version": "v1.4.3",
+	"version": "v1.4.4",
 	"developer": "Assorted Fruits",
 	"description": "Holds your click for a few ms until the timing is safe, then lets it through. Works in every gamemode.",
 	"tags": [
@@ -166,7 +166,7 @@
 		"debug-overlay": {
 			"type": "bool",
 			"name": "Debug Overlay",
-			"description": "Draws where you'd die if you click or don't click right now (green = click/hold, blue = don't click/release). When the mod moves an input it briefly shows your timing in orange and its pick in yellow, and it labels every decision in the corner.",
+			"description": "Draws where you'd die if you click or don't click right now (green = click/hold, blue = don't click/release). When the mod moves an input it briefly shows your timing in orange and its pick in yellow, and it labels every decision in the corner. After each attempt it also shows a short save check (whether the game tried to save your percent, and anything the mod had to put back).",
 			"default": false
 		},
 		"experimental-title": {

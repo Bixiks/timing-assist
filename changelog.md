@@ -1,3 +1,7 @@
+# v1.4.4
+- Bigger fix for percent and orbs not saving: after every check the mod now puts back every value in the level and game state it could have touched, not just a few
+- Debug Overlay now shows a save check after each attempt, to help track down saving problems
+
 # v1.4.3
 - Another fix for percent and orbs not saving with Safe Mode off. The invisible test players were leaving traces in the game's level state and its object counter, which the game checks before saving. All of that is now put back exactly how it was after every check
 - The mod now waits a moment at the start of each attempt before it steps in
