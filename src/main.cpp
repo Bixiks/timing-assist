@@ -840,7 +840,7 @@ bool canAssist(PlayLayer* pl, Targets const& t) {
     for (int i = 0; i < t.count; i++) {
         auto p = t.players[i];
         if (!p || p->m_isDead || p->m_isDashing || p->m_isLocked) return false;
-        if (!g.orbSim && touchingRing(p)) return false;
+        if (touchingRing(p)) return false;
     }
     return true;
 }
@@ -1735,7 +1735,7 @@ void firePending(GJBaseGameLayer* layer, PlayLayer* pl) {
         while (!ch.queue.empty()) {
             Queued q = ch.queue.front();
             bool due = q.tick <= g.updates;
-            if (!due && q.down && !g.orbSim) {
+            if (!due && q.down) {
                 auto t = targetsFor(pl, q.isPlayer1);
                 for (int i = 0; i < t.count; i++) {
                     if (touchingRing(t.players[i])) due = true;
@@ -2035,6 +2035,14 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
         for (int i = 0; i < n; i++) {
             auto obj = (*objects)[i];
             if (!obj) continue;
+            if (obj == m_anticheatSpike) {
+                if (!obj->m_isDisabled && !obj->m_isDisabled2) {
+                    obj->m_isDisabled = true;
+                    obj->m_isDisabled2 = true;
+                    off.push_back(obj);
+                }
+                continue;
+            }
             if (simulatedSpecial(obj)) continue;
             if (keepInSim(obj->m_objectType) && !isCollectibleId(obj->m_objectID)) {
                 if (!g.trackClearance || obj->m_isDisabled || obj->m_isDisabled2) continue;
@@ -2234,7 +2242,13 @@ class $modify(TAPlayLayer, PlayLayer) {
     }
 
     void destroyPlayer(PlayerObject* player, GameObject* object) {
-        if (g.simulating || (layerReady(this) && player && (player == g.fakes[0] || player == g.fakes[1]))) {
+        bool fake = player && (player == g.fakes[0] || player == g.fakes[1]);
+        if (object && object == m_anticheatSpike && !fake) {
+            PlayLayer::destroyPlayer(player, object);
+            return;
+        }
+        if (object && object == m_anticheatSpike && fake) return;
+        if (g.simulating || (layerReady(this) && fake)) {
             g.simDied = true;
             return;
         }

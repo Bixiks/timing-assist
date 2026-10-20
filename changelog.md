@@ -1,3 +1,11 @@
+# v1.4.2
+- Fixed percent and orbs not saving even with Safe Mode off: the invisible test players could touch the game's anticheat spike, which made the game think you were using noclip. The simulation now skips that spike and never touches the real hit
+- Also fixes the start of levels sometimes looking "dangerous" to the mod for the same reason
+
+# v1.4.1
+- Fixed orb clicks doing nothing: clicking while you're on an orb now always goes through instantly (no delay, no Input Lead)
+- A delayed click that's still waiting fires right away the moment you touch an orb
+
 # v1.4.0
 - Plan Ahead setting (1-4 moves): makes sure you can keep surviving that many moves after your click, in every gamemode
 - Lookahead can go up to 2 seconds now, and it also lets cube, ball and robot falls be followed longer

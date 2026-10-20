@@ -19,7 +19,7 @@ Cube, ship, ball, UFO, wave, robot, spider and swing, plus mini, dual and platfo
 - **Release Assist:** in ship, wave and robot your release also gets checked and moved to the nearest safe tick.
 
 ## Orbs & Pads
-The check runs through orbs and pads using the game's own orb code, so every gamemode reacts to them exactly like the real game. It can line up clicks on orbs too. Custom orbs, teleport orbs and portals still stop the check.
+The check runs through orbs and pads using the game's own orb code, so every gamemode reacts to them exactly like the real game. Clicks you make while touching an orb always go through instantly, so orbs always trigger. Custom orbs, teleport orbs and portals still stop the check.
 
 ## Frame perfects
 - It checks that you'd survive with a margin, not just barely. If your timing only scrapes by and another tick is clearly safer, it moves to that one.
@@ -40,7 +40,7 @@ If you let go in wave at a bad time, it keeps holding for you until letting go i
 Draws a live projection like Show Trajectory: green is where you go if you click or keep holding, blue is where you go if you don't click or let go, and red and blue boxes mark where you'd die. When the mod moves an input it briefly shows your timing in orange and its pick in yellow, and the corner label names every decision.
 
 ## Good to know
-- It won't touch a click while you're dashing.
+- It won't touch a click while you're on an orb or dashing.
 - Moving objects are treated as if they stand still during the check.
 - Safe Mode (on by default) blocks progress for any attempt where it actually moved an input.
 - Turn Click Between Frames off while using this, they fight over input timing.

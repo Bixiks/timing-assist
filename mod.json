@@ -5,7 +5,7 @@
 	},
 	"id": "assortedfruits.timing-assist",
 	"name": "Timing Assist",
-	"version": "v1.4.0",
+	"version": "v1.4.2",
 	"developer": "Assorted Fruits",
 	"description": "Holds your click for a few ms until the timing is safe, then lets it through. Works in every gamemode.",
 	"tags": [
@@ -99,7 +99,7 @@
 		"simulate-orbs": {
 			"type": "bool",
 			"name": "Orbs & Pads",
-			"description": "Lets the check see through orbs and pads using the game's own orb physics, so it can line up clicks on orbs too. Custom orbs, teleport orbs and portals still stop the check. Turn off if something acts weird near orbs.",
+			"description": "Lets the check see through orbs and pads using the game's own orb physics when it judges your other clicks. Clicks while you're on an orb always go through instantly. Custom orbs, teleport orbs and portals still stop the check.",
 			"default": true
 		},
 		"lead-title": {
