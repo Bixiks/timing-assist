@@ -18,17 +18,27 @@ Cube, ship, ball, UFO, wave, robot, spider and swing, plus mini, dual and platfo
 - **Keep Hold Length:** if your press was delayed, your release gets the same delay, so a ship or wave hold stays the length you meant.
 - **Release Assist:** in ship, wave and robot your release also gets checked and moved to the nearest safe tick.
 
-## Smart Predict (experimental, off by default)
-Fixes clicks that came slightly too late. The mod remembers your player's last few ticks. If a click comes in late and pressing now would kill you, it checks whether pressing a few ticks earlier would have worked. If so, it rewinds your player to that tick, applies the click there, and catches back up in the same frame. Ship, wave and robot releases get the same treatment.
+## Orbs & Pads
+The check runs through orbs and pads using the game's own orb code, so every gamemode reacts to them exactly like the real game. It can line up clicks on orbs too. Custom orbs, teleport orbs and portals still stop the check.
 
-It only rewinds if nothing else happened in between (no other inputs, orbs, pads, portals, gamemode or gravity changes). Your icon can snap a tiny bit when it kicks in.
+## Frame perfects
+- It checks that you'd survive with a margin, not just barely. If your timing only scrapes by and another tick is clearly safer, it moves to that one.
+- If nothing safe is found in the normal window, it looks a few ticks further as a last resort.
+- It calibrates its own timing. It compares its predictions with what really happens, and if it's consistently one tick off it corrects itself and remembers that.
+
+## Smart Predict (experimental, on by default)
+Fixes clicks that came slightly too late. The mod remembers your player's last few ticks. If a click comes in late and pressing now would kill you, it checks whether pressing a few ticks earlier would have worked, and if so replays those ticks with the click in the right spot. Your icon slides over to the fixed path over a few frames instead of snapping, and fixes that would move you too far are skipped. Ship, wave and robot releases get the same treatment.
+
+It only does this if nothing else happened in between (no other inputs, orbs, pads, portals, gamemode or gravity changes).
+
+## Wave Adjust (super experimental, off by default)
+If you let go in wave at a bad time, it keeps holding for you until letting go is safe, then lets go (up to 120ms by default). Clicking again while it's holding just keeps you holding.
 
 ## Debug Overlay
 Draws a live projection like Show Trajectory: green is where you go if you click or keep holding, blue is where you go if you don't click or let go, and red and blue boxes mark where you'd die. When the mod moves an input it briefly shows your timing in orange and its pick in yellow, and the corner label names every decision.
 
 ## Good to know
-- It won't touch a click while you're on an orb or dashing.
-- It stops looking ahead at pads, portals and orbs it can't predict, so it plays it safe around them.
+- It won't touch a click while you're dashing.
 - Moving objects are treated as if they stand still during the check.
 - Safe Mode (on by default) blocks progress for any attempt where it actually moved an input.
 - Turn Click Between Frames off while using this, they fight over input timing.

@@ -1,3 +1,9 @@
+# v1.3.0
+- Orbs & pads are simulated with the game's own physics, so clicks on orbs get lined up too
+- Frame perfects: picks safer ticks when your timing only barely survives, searches a bit further as a last resort, and calibrates its own timing
+- Smart Predict now slides your icon instead of snapping it, skips fixes that would move you too far, and is on by default
+- Wave Adjust (super experimental): holds your wave for you until letting go is safe
+
 # v1.2.0
 - Only steps in when no reasonable hold or follow-up click saves your timing (fixes wave presses getting delayed for no reason)
 - Picks the safest tick instead of the first one that survives

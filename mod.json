@@ -5,7 +5,7 @@
 	},
 	"id": "assortedfruits.timing-assist",
 	"name": "Timing Assist",
-	"version": "v1.2.0",
+	"version": "v1.3.0",
 	"developer": "Assorted Fruits",
 	"description": "Holds your click for a few ms until the timing is safe, then lets it through. Works in every gamemode.",
 	"tags": [
@@ -67,6 +67,12 @@
 				"slider": true,
 				"slider-step": 10
 			}
+		},
+		"simulate-orbs": {
+			"type": "bool",
+			"name": "Orbs & Pads",
+			"description": "Lets the check see through orbs and pads using the game's own orb physics, so it can line up clicks on orbs too. Custom orbs, teleport orbs and portals still stop the check. Turn off if something acts weird near orbs.",
+			"default": true
 		},
 		"lead-title": {
 			"type": "title",
@@ -142,14 +148,14 @@
 		"smart-predict": {
 			"type": "bool",
 			"name": "Smart Predict",
-			"description": "Fixes clicks that came a little too late. If clicking now would kill you but clicking a moment ago wouldn't have, it rewinds your player those few ticks, applies the click there, then catches back up. Your icon can snap a tiny bit when this happens.",
-			"default": false
+			"description": "Fixes clicks that came a little too late. If clicking now would kill you but clicking a moment ago wouldn't have, it replays those few ticks with the click in the right spot. Your icon slides over to the fixed path instead of snapping, and fixes that would move you too far are skipped.",
+			"default": true
 		},
 		"smart-window": {
 			"type": "int",
 			"name": "Smart Predict Window (ms)",
 			"description": "How late a click can be and still get fixed. Bigger windows save more clicks but the snap gets more noticeable.",
-			"default": 25,
+			"default": 16,
 			"min": 4,
 			"max": 50,
 			"enable-if": "smart-predict",
@@ -158,6 +164,27 @@
 				"arrow-step": 4,
 				"slider": true,
 				"slider-step": 1
+			}
+		},
+		"wave-adjust": {
+			"type": "bool",
+			"name": "Wave Adjust",
+			"description": "Super experimental. If you let go in wave at a bad time, it keeps holding for you until letting go is safe, then lets go. Clicking again while it's holding just keeps you holding.",
+			"default": false
+		},
+		"adjust-max": {
+			"type": "int",
+			"name": "Wave Adjust Max Hold (ms)",
+			"description": "The longest Wave Adjust will keep holding before it lets go anyway.",
+			"default": 120,
+			"min": 20,
+			"max": 250,
+			"enable-if": "wave-adjust",
+			"control": {
+				"arrows": true,
+				"arrow-step": 10,
+				"slider": true,
+				"slider-step": 5
 			}
 		}
 	}

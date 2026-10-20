@@ -3,6 +3,10 @@
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/GJGameLevel.hpp>
+#include <Geode/modify/EnhancedGameObject.hpp>
+#include <Geode/modify/EffectGameObject.hpp>
+#include <Geode/modify/RingObject.hpp>
+#include <Geode/modify/GameObject.hpp>
 
 #include <algorithm>
 #include <array>
@@ -231,10 +235,15 @@ constexpr int kLandMargin = 2;
 constexpr int kWindowMargin = 4;
 constexpr int kAfterRelease = 6;
 constexpr int kAfterPress = 6;
+constexpr int kRescue = 4;
 constexpr int kNoTick = -1000000;
 constexpr int kRing = 16;
 constexpr float kClearCap = 40.f;
 constexpr float kShiftPenalty = 1.5f;
+constexpr float kRiskClear = 1.5f;
+constexpr float kRiskGain = 3.f;
+constexpr float kMaxSnap = 24.f;
+constexpr float kSmoothTime = 0.025f;
 constexpr double kTicksPerSecond = 240.0;
 
 enum class Mode { Cube, Ship, Ball, Ufo, Wave, Robot, Spider, Swing };
@@ -249,6 +258,7 @@ struct Snapshot {
     TA_LIGHT_FIELDS(TA_DECLARE)
     TA_HEAVY_FIELDS(TA_DECLARE)
 #undef TA_DECLARE
+    std::vector<CCObject*> touching;
     CCPoint nodePosition;
     CCSize nodeContentSize;
     float nodeRotation = 0.f;
@@ -280,6 +290,10 @@ struct Channel {
     int shift = 0;
     int firePressTick = 0;
     Mode mode = Mode::Cube;
+    bool adjusting = false;
+    bool adjustIsPlayer1 = true;
+    int adjustStart = 0;
+    int adjustDeadline = 0;
 };
 
 struct Config {
@@ -294,7 +308,9 @@ struct Config {
     bool indicator = false;
     bool debug = false;
     bool smart = false;
-    int smartWindow = 6;
+    int smartWindow = 4;
+    bool adjust = false;
+    int adjustMax = 29;
 };
 
 struct SimEvent {
@@ -315,7 +331,8 @@ struct SimPlan {
     std::vector<SimEvent> events;
     int length = 0;
     int watchFrom = -1;
-    int probeAt = -1;
+    int captureAt = -1;
+    bool noOffset = false;
     bool trackClearance = false;
     SimRecord* record = nullptr;
 };
@@ -330,6 +347,7 @@ struct Outcome {
     bool ok = false;
     bool idleDeath = false;
     float clearance = 0.f;
+    int survivors = 0;
 };
 
 struct Choice {
@@ -343,6 +361,16 @@ struct Probe {
     int compareAt = 0;
     PlayerObject* player = nullptr;
     CCPoint predicted[3];
+    bool valid[3] = { false, false, false };
+};
+
+struct Smooth {
+    bool active = false;
+    PlayerObject* player = nullptr;
+    CCPoint offset;
+    float rotation = 0.f;
+    CCPoint basePosition;
+    float baseRotation = 0.f;
 };
 
 struct Targets {
@@ -360,6 +388,7 @@ struct EvalContext {
     Config const* cfg = nullptr;
     int futureFrom = 0;
     bool wantProbe = false;
+    bool noOffset = false;
 };
 
 struct State {
@@ -373,8 +402,11 @@ struct State {
     std::array<double, kModeCount> gap{};
     std::array<std::array<Snapshot, kRing>, 2> ring;
     Snapshot live[2];
+    Smooth smooth[2];
     int updates = 0;
     int lastAnyInput = kNoTick;
+    int inputOffset = 0;
+    std::array<int, 3> votes{};
     float stepDt = 0.25f;
     bool ready = false;
     bool inQueue = false;
@@ -386,12 +418,13 @@ struct State {
     bool simUnknown = false;
     bool trackClearance = false;
     float simClearance = kClearCap;
+    bool captured = false;
+    CCPoint capturePos;
     bool changedThisAttempt = false;
     bool smartOn = false;
     bool debugOn = false;
+    bool orbSim = true;
     Probe probe;
-    CCPoint probeCapture[3];
-    int probeCaptured = 0;
     int mismatch = 0;
     bool untrusted = false;
 };
@@ -422,6 +455,8 @@ Config readConfig() {
     c.debug = mod->getSettingValue<bool>("debug-overlay");
     c.smart = mod->getSettingValue<bool>("smart-predict");
     c.smartWindow = std::clamp(msToTicks(mod->getSettingValue<int64_t>("smart-window")), 1, kRing - 2);
+    c.adjust = mod->getSettingValue<bool>("wave-adjust");
+    c.adjustMax = std::max(1, msToTicks(mod->getSettingValue<int64_t>("adjust-max")));
     return c;
 }
 
@@ -495,8 +530,11 @@ int leadFor(Config const& cfg, Mode m) {
 
 std::vector<int> spreadAround(int center, int lo, int hi, std::initializer_list<int> base) {
     std::vector<int> out;
-    for (int v : base) {
+    for (int v = center - 2; v <= center + 2; v++) {
         if (v >= lo && v <= hi) out.push_back(v);
+    }
+    for (int v : base) {
+        if (v >= lo && v <= hi && std::find(out.begin(), out.end(), v) == out.end()) out.push_back(v);
     }
     if (out.empty()) out.push_back(std::clamp(center, lo, hi));
     std::stable_sort(out.begin(), out.end(), [center](int a, int b) {
@@ -533,6 +571,32 @@ bool keepInSim(GameObjectType t) {
         || t == GameObjectType::Hazard
         || t == GameObjectType::AnimatedHazard
         || t == GameObjectType::Slope;
+}
+
+bool isSimSpecial(GameObjectType t) {
+    switch (t) {
+        case GameObjectType::YellowJumpPad:
+        case GameObjectType::PinkJumpPad:
+        case GameObjectType::GravityPad:
+        case GameObjectType::RedJumpPad:
+        case GameObjectType::SpiderPad:
+        case GameObjectType::YellowJumpRing:
+        case GameObjectType::PinkJumpRing:
+        case GameObjectType::GravityRing:
+        case GameObjectType::GreenRing:
+        case GameObjectType::DropRing:
+        case GameObjectType::RedJumpRing:
+        case GameObjectType::DashRing:
+        case GameObjectType::GravityDashRing:
+        case GameObjectType::SpiderOrb:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool simulatedSpecial(GameObject* obj) {
+    return g.orbSim && obj && isSimSpecial(obj->m_objectType);
 }
 
 bool isCollectibleId(int id) {
@@ -595,6 +659,12 @@ float rectGap(CCRect const& a, CCRect const& b) {
     return std::sqrt(dx * dx + dy * dy);
 }
 
+float normalizeAngle(float a) {
+    while (a > 180.f) a -= 360.f;
+    while (a < -180.f) a += 360.f;
+    return a;
+}
+
 void clearLogs(PlayerObject* p) {
     p->m_collisionLogTop->removeAllObjects();
     p->m_collisionLogBottom->removeAllObjects();
@@ -614,6 +684,12 @@ void save(Snapshot& s, PlayerObject* p, bool heavy) {
     }
 #undef TA_SAVE
     s.hasHeavy = heavy;
+    s.touching.clear();
+    if (heavy && p->m_touchingRings) {
+        for (unsigned int i = 0; i < p->m_touchingRings->count(); i++) {
+            s.touching.push_back(p->m_touchingRings->objectAtIndex(i));
+        }
+    }
     s.nodePosition = p->getPosition();
     s.nodeContentSize = p->getContentSize();
     s.nodeRotation = p->getRotation();
@@ -639,12 +715,16 @@ void load(PlayerObject* p, Snapshot const& s, bool forSim) {
         TA_HEAVY_FIELDS(TA_LOAD)
     }
 #undef TA_LOAD
+    p->m_touchingRings->removeAllObjects();
     if (forSim) {
         p->m_isDead = false;
         p->m_isDashing = false;
         p->m_shouldTryPlacingCheckpoint = false;
         p->m_canPlaceCheckpoint = false;
         p->m_checkpointTimeout = false;
+        if (g.orbSim) {
+            for (auto obj : s.touching) p->m_touchingRings->addObject(obj);
+        }
     }
     else {
         p->m_isDead = s.isDead;
@@ -653,7 +733,6 @@ void load(PlayerObject* p, Snapshot const& s, bool forSim) {
         p->m_canPlaceCheckpoint = s.canPlaceCheckpoint;
         p->m_checkpointTimeout = s.checkpointTimeout;
     }
-    p->m_touchingRings->removeAllObjects();
     clearLogs(p);
     p->m_isObjectRectDirty = true;
     p->m_isOrientedBoxDirty = true;
@@ -704,7 +783,7 @@ bool canAssist(PlayLayer* pl, Targets const& t) {
     for (int i = 0; i < t.count; i++) {
         auto p = t.players[i];
         if (!p || p->m_isDead || p->m_isDashing || p->m_isLocked) return false;
-        if (touchingRing(p)) return false;
+        if (!g.orbSim && touchingRing(p)) return false;
     }
     return true;
 }
@@ -728,7 +807,9 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
         blockY[i] = blocks[i]->m_positionY;
     }
 
+    int offset = plan.noOffset ? 0 : g.inputOffset;
     std::vector<SimEvent> events = plan.events;
+    for (auto& e : events) e.tick = std::max(0, e.tick + offset);
     std::stable_sort(events.begin(), events.end(), [](SimEvent const& a, SimEvent const& b) {
         return a.tick < b.tick;
     });
@@ -753,7 +834,7 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
     g.simUnknown = false;
     g.trackClearance = plan.trackClearance;
     g.simClearance = kClearCap;
-    g.probeCaptured = 0;
+    g.captured = false;
 
     for (int tick = 0; tick < end; tick++) {
         if (phase == LandPhase::WaitStart && tick >= plan.watchFrom) {
@@ -803,9 +884,9 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
             break;
         }
 
-        if (plan.probeAt > 0 && tick >= plan.probeAt - 1 && tick <= plan.probeAt + 1) {
-            g.probeCapture[tick - plan.probeAt + 1] = fakes[0]->getPosition();
-            g.probeCaptured++;
+        if (tick == plan.captureAt) {
+            g.capturePos = fakes[0]->getPosition();
+            g.captured = true;
         }
 
         bool grounded = fakes[0]->m_isOnGround;
@@ -853,9 +934,42 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
     return result;
 }
 
-bool considerRun(EvalContext const& c, SimPlan& plan, bool score, Outcome& best, int& survivors, int idleUntil) {
+void armProbe(EvalContext const& c, SimPlan const& base, int rel, CCPoint predicted) {
+    g.probe.active = true;
+    g.probe.compareAt = g.updates + 2 + base.captureAt;
+    g.probe.player = c.targets->players[0];
+    g.probe.predicted[1] = predicted;
+    g.probe.valid[1] = true;
+    for (int s = 0; s < 3; s += 2) {
+        int delta = s - 1;
+        g.probe.valid[s] = false;
+        SimPlan alt = base;
+        alt.record = nullptr;
+        alt.trackClearance = false;
+        alt.watchFrom = -1;
+        alt.length = base.captureAt + 1;
+        bool moved = false;
+        for (auto& e : alt.events) {
+            if (e.down && e.tick == rel) {
+                if (e.tick + delta < 0) break;
+                e.tick += delta;
+                moved = true;
+                break;
+            }
+        }
+        if (!moved) continue;
+        auto r = runSim(c.pl, c.targets->count, c.sources, alt);
+        if (r.death < 0 && r.unknownAt < 0 && g.captured) {
+            g.probe.predicted[s] = g.capturePos;
+            g.probe.valid[s] = true;
+        }
+    }
+}
+
+bool considerRun(EvalContext const& c, SimPlan& plan, bool score, Outcome& best, int idleUntil) {
     plan.length = std::max(plan.length, c.futureFrom + kWindowMargin);
     plan.trackClearance = score;
+    plan.noOffset = c.noOffset;
     auto r = runSim(c.pl, c.targets->count, c.sources, plan);
     if (r.death >= 0 && r.death < idleUntil) best.idleDeath = true;
     bool ok = r.death < 0 && (r.unknownAt < 0 || r.unknownAt >= c.futureFrom);
@@ -865,8 +979,8 @@ bool considerRun(EvalContext const& c, SimPlan& plan, bool score, Outcome& best,
         best.ok = true;
         best.clearance = clear;
     }
-    survivors++;
-    return !score || survivors >= 3;
+    best.survivors++;
+    return !score || best.survivors >= 3;
 }
 
 SimPlan basePlan(EvalContext const& c) {
@@ -875,12 +989,24 @@ SimPlan basePlan(EvalContext const& c) {
     return p;
 }
 
+void runPressPlan(EvalContext const& c, SimPlan& p, int rel, int releaseAt, bool score, Outcome& best, bool& probeDone, bool& stop) {
+    bool probe = c.wantProbe && !probeDone && rel == std::max(rel, c.futureFrom) && releaseAt - rel >= 4;
+    if (probe) p.captureAt = rel + std::min(6, releaseAt - rel - 2);
+    int before = best.survivors;
+    stop = considerRun(c, p, score, best, rel);
+    if (probe && best.survivors > before && g.captured) {
+        CCPoint predicted = g.capturePos;
+        probeDone = true;
+        armProbe(c, p, rel, predicted);
+    }
+}
+
 Outcome evalPress(EvalContext const& c, int rel, bool score) {
     Mode m = c.mode;
     int anchor = std::max(rel, c.futureFrom);
     Outcome best;
-    int survivors = 0;
-    bool probeSet = false;
+    bool probeDone = false;
+    bool stop = false;
 
     if (isHoldMode(m) || m == Mode::Robot) {
         for (int h : holdOptions(m)) {
@@ -894,37 +1020,23 @@ Outcome evalPress(EvalContext const& c, int rel, bool score) {
             else {
                 p.length = anchor + std::min(c.cfg->lookahead, h + kAfterRelease);
             }
-            bool probe = c.wantProbe && !probeSet && h >= 4 && rel == anchor;
-            if (probe) p.probeAt = rel + std::min(6, h - 2);
-            int before = survivors;
-            bool stop = considerRun(c, p, score, best, survivors, rel);
-            if (probe && survivors > before && g.probeCaptured == 3) {
-                probeSet = true;
-                g.probe.active = true;
-                g.probe.compareAt = g.updates + 2 + p.probeAt;
-                g.probe.player = c.targets->players[0];
-                for (int i = 0; i < 3; i++) g.probe.predicted[i] = g.probeCapture[i];
-            }
+            runPressPlan(c, p, rel, anchor + h, score, best, probeDone, stop);
             if (stop || best.idleDeath) break;
         }
         return best;
     }
 
     if (isLandMode(m)) {
-        SimPlan p = basePlan(c);
         int h = holdTicks(m);
-        p.events.push_back({ rel, true });
-        p.events.push_back({ anchor + h, false });
-        p.length = anchor + c.cfg->lookahead;
-        p.watchFrom = rel;
-        bool probe = c.wantProbe && h >= 4 && rel == anchor;
-        if (probe) p.probeAt = rel + std::min(6, h - 2);
-        considerRun(c, p, score, best, survivors, rel);
-        if (probe && survivors > 0 && g.probeCaptured == 3) {
-            g.probe.active = true;
-            g.probe.compareAt = g.updates + 2 + p.probeAt;
-            g.probe.player = c.targets->players[0];
-            for (int i = 0; i < 3; i++) g.probe.predicted[i] = g.probeCapture[i];
+        int releases[2] = { anchor + h, anchor + c.cfg->lookahead + 1 };
+        for (int releaseAt : releases) {
+            SimPlan p = basePlan(c);
+            p.events.push_back({ rel, true });
+            p.events.push_back({ releaseAt, false });
+            p.length = anchor + c.cfg->lookahead;
+            p.watchFrom = rel;
+            runPressPlan(c, p, rel, releaseAt, score, best, probeDone, stop);
+            if (stop || best.idleDeath) break;
         }
         return best;
     }
@@ -943,7 +1055,8 @@ Outcome evalPress(EvalContext const& c, int rel, bool score) {
         else {
             p.length = anchor + std::min(c.cfg->lookahead, quiet);
         }
-        if (considerRun(c, p, score, best, survivors, rel) || best.idleDeath) break;
+        runPressPlan(c, p, rel, anchor + tap, score, best, probeDone, stop);
+        if (stop || best.idleDeath) break;
     }
     return best;
 }
@@ -952,14 +1065,13 @@ Outcome evalRelease(EvalContext const& c, int rel, bool score) {
     Mode m = c.mode;
     int anchor = std::max(rel, c.futureFrom);
     Outcome best;
-    int survivors = 0;
 
     if (m == Mode::Robot || !isHoldMode(m)) {
         SimPlan p = basePlan(c);
         p.events.push_back({ rel, false });
         p.length = anchor + c.cfg->lookahead;
         p.watchFrom = rel;
-        considerRun(c, p, score, best, survivors, rel);
+        considerRun(c, p, score, best, rel);
         return best;
     }
 
@@ -973,7 +1085,7 @@ Outcome evalRelease(EvalContext const& c, int rel, bool score) {
         else {
             p.length = anchor + std::min(c.cfg->lookahead, 10);
         }
-        if (considerRun(c, p, score, best, survivors, rel) || best.idleDeath) break;
+        if (considerRun(c, p, score, best, rel) || best.idleDeath) break;
     }
     return best;
 }
@@ -1007,30 +1119,44 @@ template <class Eval>
 Choice chooseTick(int now, int preferred, int lo, int hi, bool nearestOnly, Eval&& eval) {
     Choice choice;
     choice.tick = preferred;
-    auto first = eval(preferred - now, false);
-    if (first.ok) return choice;
-    choice.firstOk = false;
+    auto first = eval(preferred - now, true);
+    choice.firstOk = first.ok;
+    if (first.ok && first.clearance >= kRiskClear) return choice;
 
-    bool found = false;
-    float bestScore = -1e9f;
-    int bestTick = preferred;
-    for (int d = 1; d <= hi - lo; d++) {
-        for (int side = 0; side < 2; side++) {
-            int t = side == 0 ? preferred + d : preferred - d;
-            if (t < lo || t > hi) continue;
-            auto o = eval(t - now, !nearestOnly);
-            if (!o.ok) continue;
-            float score = o.clearance - kShiftPenalty * d;
-            if (!found || score > bestScore) {
-                found = true;
-                bestScore = score;
-                bestTick = t;
+    auto search = [&](int a, int b, float need, int& outTick) {
+        bool found = false;
+        float bestScore = -1e9f;
+        int span = std::max(preferred - a, b - preferred);
+        for (int d = 1; d <= span; d++) {
+            for (int side = 0; side < 2; side++) {
+                int t = side == 0 ? preferred + d : preferred - d;
+                if (t < a || t > b) continue;
+                auto o = eval(t - now, true);
+                if (!o.ok || o.clearance < need) continue;
+                float score = o.clearance + static_cast<float>(o.survivors) - kShiftPenalty * d;
+                if (!found || score > bestScore) {
+                    found = true;
+                    bestScore = score;
+                    outTick = t;
+                }
+                if (o.idleDeath) break;
             }
+            if (found && nearestOnly) break;
         }
-        if (found && nearestOnly) break;
+        return found;
+    };
+
+    int picked = preferred;
+    if (first.ok) {
+        if (search(lo, hi, first.clearance + kRiskGain, picked)) choice.tick = picked;
+        return choice;
     }
-    choice.found = found;
-    choice.tick = found ? bestTick : preferred;
+
+    if (search(lo, hi, 0.f, picked) || search(hi + 1, hi + kRescue, 0.f, picked)) {
+        choice.tick = picked;
+        return choice;
+    }
+    choice.found = false;
     return choice;
 }
 
@@ -1067,6 +1193,8 @@ int pickLateTicks(PlayLayer* pl, Targets const& t, Channel const& ch, int now, b
     c.targets = &t;
     c.mode = modeOf(t.players[0]);
     c.cfg = &cfg;
+    c.noOffset = true;
+    CCPoint current = t.players[0]->getPosition();
 
     for (int j = 1; j <= cfg.smartWindow; j++) {
         int u = now - j;
@@ -1088,6 +1216,14 @@ int pickLateTicks(PlayLayer* pl, Targets const& t, Channel const& ch, int now, b
         }
         if (!usable) break;
 
+        SimPlan reach;
+        reach.events.push_back({ 0, press });
+        reach.length = j;
+        reach.captureAt = j - 1;
+        reach.noOffset = true;
+        runSim(pl, t.count, c.sources, reach);
+        if (!g.captured || ccpDistance(g.capturePos, current) > kMaxSnap) break;
+
         c.futureFrom = j;
         auto o = press ? evalPress(c, 0, false) : evalRelease(c, 0, false);
         if (o.ok) return j;
@@ -1095,9 +1231,54 @@ int pickLateTicks(PlayLayer* pl, Targets const& t, Channel const& ch, int now, b
     return 0;
 }
 
+void applySmooth(Smooth& s) {
+    auto p = s.player;
+    if (!p || !p->m_mainLayer || !p->getParent()) return;
+    auto parent = p->getParent();
+    CCPoint cur = p->getPosition();
+    CCPoint a = p->convertToNodeSpace(parent->convertToWorldSpace(cur));
+    CCPoint b = p->convertToNodeSpace(parent->convertToWorldSpace(cur + s.offset));
+    p->m_mainLayer->setPosition(s.basePosition + (b - a));
+    float sign = p->getScaleX() * p->getScaleY() < 0.f ? -1.f : 1.f;
+    p->m_mainLayer->setRotation(s.baseRotation + s.rotation * sign);
+}
+
+void endSmooth(Smooth& s) {
+    if (s.active && s.player && s.player->m_mainLayer) {
+        s.player->m_mainLayer->setPosition(s.basePosition);
+        s.player->m_mainLayer->setRotation(s.baseRotation);
+    }
+    s = Smooth();
+}
+
+void endAllSmooth(bool restore) {
+    for (auto& s : g.smooth) {
+        if (restore) endSmooth(s);
+        else s = Smooth();
+    }
+}
+
+void tickSmooth(float dt) {
+    float keep = std::exp(-std::max(dt, 0.f) / kSmoothTime);
+    for (auto& s : g.smooth) {
+        if (!s.active) continue;
+        s.offset = s.offset * keep;
+        s.rotation *= keep;
+        if (ccpLength(s.offset) < 0.25f && std::abs(s.rotation) < 0.5f) {
+            endSmooth(s);
+            continue;
+        }
+        applySmooth(s);
+    }
+}
+
 void applyLate(PlayLayer* pl, Targets const& t, int j, bool down, bool isPlayer1) {
     int u = g.updates - j;
+    CCPoint oldPos[2];
+    float oldRot[2] = { 0.f, 0.f };
     for (int i = 0; i < t.count; i++) {
+        oldPos[i] = t.players[i]->getPosition();
+        oldRot[i] = t.players[i]->getRotation();
         load(t.players[i], g.ring[playerIndex(pl, t.players[i])][ringSlot(u)], false);
     }
 
@@ -1119,6 +1300,21 @@ void applyLate(PlayLayer* pl, Targets const& t, int j, bool down, bool isPlayer1
     }
     g.catchingUp = false;
     g.lastAnyInput = g.updates;
+
+    for (int i = 0; i < t.count; i++) {
+        auto p = t.players[i];
+        if (!p->m_mainLayer || p->m_isDead) continue;
+        auto& s = g.smooth[playerIndex(pl, p)];
+        if (!s.active) {
+            s.basePosition = p->m_mainLayer->getPosition();
+            s.baseRotation = p->m_mainLayer->getRotation();
+        }
+        s.active = true;
+        s.player = p;
+        s.offset = s.offset + (oldPos[i] - p->getPosition());
+        s.rotation = normalizeAngle(s.rotation + normalizeAngle(oldRot[i] - p->getRotation()));
+        applySmooth(s);
+    }
 }
 
 void takeSnapshots(PlayLayer* pl) {
@@ -1244,14 +1440,41 @@ void resetChannels() {
     for (auto& ch : g.channels) ch = Channel();
 }
 
+void sendButton(GJBaseGameLayer* layer, bool down, bool isPlayer1) {
+    g.dispatching = true;
+    layer->handleButton(down, static_cast<int>(PlayerButton::Jump), isPlayer1);
+    g.dispatching = false;
+}
+
 void dispatch(GJBaseGameLayer* layer, Channel& ch, Queued const& q) {
     if (q.down && q.main && ch.held && q.origin == ch.pressTick) {
         ch.shift = std::max(0, g.updates - ch.pressTick);
         ch.firePressTick = g.updates;
     }
-    g.dispatching = true;
-    layer->handleButton(q.down, static_cast<int>(PlayerButton::Jump), q.isPlayer1);
-    g.dispatching = false;
+    sendButton(layer, q.down, q.isPlayer1);
+}
+
+void report(Config const& cfg, bool changed, std::string const& text) {
+    if (changed) g.changedThisAttempt = true;
+    if ((cfg.debug || (cfg.indicator && changed)) && !text.empty()) showIndicator(text);
+}
+
+void processAdjust(GJBaseGameLayer* layer, PlayLayer* pl) {
+    for (auto& ch : g.channels) {
+        if (!ch.adjusting) continue;
+        auto cfg = readConfig();
+        auto t = targetsFor(pl, ch.adjustIsPlayer1);
+        bool release = !t.players[0] || !canAssist(pl, t) || g.updates >= ch.adjustDeadline || modeOf(t.players[0]) != Mode::Wave;
+        if (!release) {
+            auto c = liveContext(pl, t, ch, g.updates, cfg);
+            auto o = evalRelease(c, 0, true);
+            release = o.ok && o.clearance >= kRiskClear;
+        }
+        if (!release) continue;
+        ch.adjusting = false;
+        sendButton(layer, false, ch.adjustIsPlayer1);
+        report(cfg, true, fmt::format("wave adjust +{}ms", ticksToMs(g.updates - ch.adjustStart)));
+    }
 }
 
 void firePending(GJBaseGameLayer* layer, PlayLayer* pl) {
@@ -1259,7 +1482,7 @@ void firePending(GJBaseGameLayer* layer, PlayLayer* pl) {
         while (!ch.queue.empty()) {
             Queued q = ch.queue.front();
             bool due = q.tick <= g.updates;
-            if (!due && q.down) {
+            if (!due && q.down && !g.orbSim) {
                 auto t = targetsFor(pl, q.isPlayer1);
                 for (int i = 0; i < t.count; i++) {
                     if (touchingRing(t.players[i])) due = true;
@@ -1279,6 +1502,10 @@ void flushAll(GJBaseGameLayer* layer) {
             ch.queue.pop_front();
             dispatch(layer, ch, q);
         }
+        if (ch.adjusting) {
+            ch.adjusting = false;
+            sendButton(layer, false, ch.adjustIsPlayer1);
+        }
         ch.shift = 0;
         ch.held = false;
     }
@@ -1289,10 +1516,32 @@ void checkProbe(PlayerObject* real) {
     g.probe.active = false;
     if (real != g.probe.player) return;
     auto pos = real->getPosition();
-    float best = 1e9f;
-    for (auto const& p : g.probe.predicted) {
-        best = std::min(best, std::abs(pos.x - p.x) + std::abs(pos.y - p.y));
+    float dist[3] = { 1e9f, 1e9f, 1e9f };
+    int bestIndex = 1;
+    for (int i = 0; i < 3; i++) {
+        if (!g.probe.valid[i]) continue;
+        auto const& p = g.probe.predicted[i];
+        dist[i] = std::abs(pos.x - p.x) + std::abs(pos.y - p.y);
+        if (dist[i] < dist[bestIndex]) bestIndex = i;
     }
+    float best = dist[bestIndex];
+
+    if (best < 0.75f && (bestIndex == 1 || dist[1] > 1.5f)) {
+        g.votes[bestIndex]++;
+        int total = g.votes[0] + g.votes[1] + g.votes[2];
+        if (total >= 6) {
+            int shift = 0;
+            if (g.votes[0] >= 5) shift = -1;
+            if (g.votes[2] >= 5) shift = 1;
+            if (shift != 0) {
+                g.inputOffset = std::clamp(g.inputOffset + shift, -2, 2);
+                log::info("timing calibrated, input offset is now {}", g.inputOffset);
+                Mod::get()->setSavedValue<int64_t>("input-offset", g.inputOffset);
+            }
+            g.votes = {};
+        }
+    }
+
     if (best > 1.5f) {
         g.mismatch += 2;
         log::debug("prediction off by {:.2f} units", best);
@@ -1311,11 +1560,6 @@ bool shouldBlockProgress() {
     return g.changedThisAttempt && Mod::get()->getSettingValue<bool>("safe-mode");
 }
 
-void report(Config const& cfg, bool changed, std::string const& text) {
-    if (changed) g.changedThisAttempt = true;
-    if ((cfg.debug || (cfg.indicator && changed)) && !text.empty()) showIndicator(text);
-}
-
 }
 
 $on_mod(Loaded) {
@@ -1323,8 +1567,11 @@ $on_mod(Loaded) {
     g.gap.fill(30.0);
     g.hold[static_cast<int>(Mode::Wave)] = 10.0;
     g.gap[static_cast<int>(Mode::Wave)] = 10.0;
-    g.smartOn = Mod::get()->getSettingValue<bool>("smart-predict");
-    g.debugOn = Mod::get()->getSettingValue<bool>("debug-overlay");
+    auto mod = Mod::get();
+    g.inputOffset = static_cast<int>(std::clamp<int64_t>(mod->getSavedValue<int64_t>("input-offset", 0), -2, 2));
+    g.smartOn = mod->getSettingValue<bool>("smart-predict");
+    g.debugOn = mod->getSettingValue<bool>("debug-overlay");
+    g.orbSim = mod->getSettingValue<bool>("simulate-orbs");
     listenForSettingChanges<bool>("smart-predict", [](bool value) {
         g.smartOn = value;
         clearRing();
@@ -1332,6 +1579,9 @@ $on_mod(Loaded) {
     listenForSettingChanges<bool>("debug-overlay", [](bool value) {
         g.debugOn = value;
         if (g.liveDraw && !value) g.liveDraw->clear();
+    });
+    listenForSettingChanges<bool>("simulate-orbs", [](bool value) {
+        g.orbSim = value;
     });
 }
 
@@ -1353,6 +1603,7 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
             GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
             return;
         }
+        processAdjust(this, pl);
         firePending(this, pl);
         bool prev = g.inCommands;
         g.inCommands = true;
@@ -1396,6 +1647,14 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
         };
 
         if (down) {
+            if (ch.adjusting) {
+                ch.adjusting = false;
+                ch.held = true;
+                ch.pressTick = now;
+                ch.shift = 0;
+                report(cfg, true, "wave adjust: kept holding");
+                return;
+            }
             if (ch.held) {
                 send(lastQueuedTick(ch, now), false);
                 return;
@@ -1430,6 +1689,7 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
             }
 
             bool moved = choice.tick != preferred;
+            if (moved) g.probe.active = false;
             if (assist && cfg.debug && moved) drawDecision(pl, targets, ch, now, cfg, preferred, choice.tick, true);
             ch.shift = std::max(0, choice.tick - now);
             ch.firePressTick = choice.tick;
@@ -1471,6 +1731,17 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
             }
         }
 
+        bool earlierFix = choice.found && choice.tick <= target;
+        if (assist && cfg.adjust && m == Mode::Wave && !choice.firstOk && !earlierFix && natural == now && ch.queue.empty()) {
+            ch.adjusting = true;
+            ch.adjustIsPlayer1 = isPlayer1;
+            ch.adjustStart = now;
+            ch.adjustDeadline = now + cfg.adjustMax;
+            ch.shift = 0;
+            report(cfg, true, "wave adjust: holding");
+            return;
+        }
+
         bool moved = choice.tick != target;
         if (assist && cfg.debug && moved) drawDecision(pl, targets, ch, now, cfg, target, choice.tick, false);
         if (assist && releaseMatters(m)) {
@@ -1504,6 +1775,7 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
         for (int i = 0; i < n; i++) {
             auto obj = (*objects)[i];
             if (!obj) continue;
+            if (simulatedSpecial(obj)) continue;
             if (keepInSim(obj->m_objectType) && !isCollectibleId(obj->m_objectID)) {
                 if (!g.trackClearance || obj->m_isDisabled || obj->m_isDisabled2) continue;
                 auto type = obj->m_objectType;
@@ -1533,7 +1805,7 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
     }
 
     void playerTouchedRing(PlayerObject* player, RingObject* object) {
-        if (g.simulating) return;
+        if (g.simulating && !simulatedSpecial(object)) return;
         GJBaseGameLayer::playerTouchedRing(player, object);
     }
 
@@ -1543,7 +1815,7 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
     }
 
     bool canBeActivatedByPlayer(PlayerObject* player, EffectGameObject* object) {
-        if (g.simulating) return false;
+        if (g.simulating && !simulatedSpecial(object)) return false;
         return GJBaseGameLayer::canBeActivatedByPlayer(player, object);
     }
 
@@ -1563,11 +1835,19 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
     }
 
     void bumpPlayer(PlayerObject* player, EffectGameObject* object) {
-        if (g.simulating) {
+        if (g.simulating && !simulatedSpecial(object)) {
             g.simUnknown = true;
             return;
         }
         GJBaseGameLayer::bumpPlayer(player, object);
+    }
+
+    void teleportPlayer(TeleportPortalObject* object, PlayerObject* player) {
+        if (g.simulating) {
+            g.simUnknown = true;
+            return;
+        }
+        GJBaseGameLayer::teleportPlayer(object, player);
     }
 };
 
@@ -1591,6 +1871,8 @@ class $modify(TAPlayLayer, PlayLayer) {
         g.mismatch = 0;
         g.untrusted = false;
         g.lastAnyInput = g.updates;
+        g.votes = {};
+        endAllSmooth(false);
         clearRing();
         resetChannels();
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
@@ -1638,6 +1920,7 @@ class $modify(TAPlayLayer, PlayLayer) {
 
         g.smartOn = mod->getSettingValue<bool>("smart-predict");
         g.debugOn = mod->getSettingValue<bool>("debug-overlay");
+        g.orbSim = mod->getSettingValue<bool>("simulate-orbs");
         g.layer = this;
         g.ready = true;
         g.lastAnyInput = g.updates;
@@ -1647,11 +1930,15 @@ class $modify(TAPlayLayer, PlayLayer) {
 
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
-        if (g.debugOn && layerReady(this) && !g.simulating) drawLiveProjection(this);
+        if (!layerReady(this)) return;
+        tickSmooth(dt);
+        if (g.debugOn && !g.simulating) drawLiveProjection(this);
     }
 
     void resetLevel() {
-        if (layerReady(this)) flushAll(this);
+        bool ready = layerReady(this);
+        if (ready) flushAll(this);
+        endAllSmooth(ready);
         PlayLayer::resetLevel();
         g.changedThisAttempt = false;
         g.probe.active = false;
@@ -1659,8 +1946,8 @@ class $modify(TAPlayLayer, PlayLayer) {
         g.untrusted = false;
         g.lastAnyInput = g.updates;
         clearRing();
-        if (g.liveDraw && layerReady(this)) g.liveDraw->clear();
-        if (g.decisionDraw && layerReady(this)) g.decisionDraw->clear();
+        if (ready && g.liveDraw) g.liveDraw->clear();
+        if (ready && g.decisionDraw) g.decisionDraw->clear();
     }
 
     void pauseGame(bool unfocused) {
@@ -1680,6 +1967,7 @@ class $modify(TAPlayLayer, PlayLayer) {
         g.label = nullptr;
         g.liveDraw = nullptr;
         g.decisionDraw = nullptr;
+        endAllSmooth(false);
         clearRing();
         resetChannels();
         PlayLayer::onQuit();
@@ -1740,7 +2028,7 @@ class $modify(TAPlayerObject, PlayerObject) {
     }
 
     void ringJump(RingObject* object, bool skipCheck) {
-        if (g.simulating) {
+        if (g.simulating && !simulatedSpecial(object)) {
             g.simUnknown = true;
             return;
         }
@@ -1775,6 +2063,54 @@ class $modify(TAPlayerObject, PlayerObject) {
     void tryPlaceCheckpoint() {
         if (g.simulating) return;
         PlayerObject::tryPlaceCheckpoint();
+    }
+};
+
+class $modify(TAEnhancedObject, EnhancedGameObject) {
+    void activatedByPlayer(PlayerObject* player) {
+        if (g.simulating) return;
+        EnhancedGameObject::activatedByPlayer(player);
+    }
+
+    void powerOnObject(int state) {
+        if (g.simulating) return;
+        EnhancedGameObject::powerOnObject(state);
+    }
+
+    void triggerActivated(float xPosition) {
+        if (g.simulating) return;
+        EnhancedGameObject::triggerActivated(xPosition);
+    }
+};
+
+class $modify(TAEffectObject, EffectGameObject) {
+    void triggerActivated(float xPosition) {
+        if (g.simulating) return;
+        EffectGameObject::triggerActivated(xPosition);
+    }
+};
+
+class $modify(TARingObject, RingObject) {
+    void powerOnObject(int state) {
+        if (g.simulating) return;
+        RingObject::powerOnObject(state);
+    }
+
+    void triggerActivated(float xPosition) {
+        if (g.simulating) return;
+        RingObject::triggerActivated(xPosition);
+    }
+
+    void spawnCircle() {
+        if (g.simulating) return;
+        RingObject::spawnCircle();
+    }
+};
+
+class $modify(TAGameObject, GameObject) {
+    void playShineEffect() {
+        if (g.simulating) return;
+        GameObject::playShineEffect();
     }
 };
 
