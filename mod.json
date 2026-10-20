@@ -1,0 +1,115 @@
+{
+	"geode": "5.11.0",
+	"gd": {
+		"win": "2.2081"
+	},
+	"id": "assortedfruits.timing-assist",
+	"name": "Timing Assist",
+	"version": "v1.1.0",
+	"developer": "Assorted Fruits",
+	"description": "Holds your click for a few ms until the timing is safe, then lets it through. Works in every gamemode.",
+	"tags": [
+		"gameplay",
+		"cheat"
+	],
+	"incompatibilities": {
+		"syzzi.click_between_frames": ">=1.0.0"
+	},
+	"settings": {
+		"general-title": {
+			"type": "title",
+			"name": "General"
+		},
+		"enabled": {
+			"type": "bool",
+			"name": "Enabled",
+			"description": "Turns the timing assist on or off.",
+			"default": true
+		},
+		"max-delay": {
+			"type": "int",
+			"name": "Max Delay (ms)",
+			"description": "The longest a click can be held back while waiting for a safe tick. Higher saves more clicks but can feel floaty. 1 tick is about 4ms.",
+			"default": 35,
+			"min": 4,
+			"max": 100,
+			"control": {
+				"arrows": true,
+				"arrow-step": 4,
+				"slider": true,
+				"slider-step": 1
+			}
+		},
+		"lookahead": {
+			"type": "int",
+			"name": "Lookahead (ms)",
+			"description": "How far ahead it checks whether a click would kill you. Cube, ball and robot check until you land, so this is just the limit.",
+			"default": 500,
+			"min": 150,
+			"max": 1000,
+			"control": {
+				"arrows": true,
+				"arrow-step": 50,
+				"slider": true,
+				"slider-step": 10
+			}
+		},
+		"release-title": {
+			"type": "title",
+			"name": "Release"
+		},
+		"keep-hold": {
+			"type": "bool",
+			"name": "Keep Hold Length",
+			"description": "If a press gets delayed, your release gets delayed by the same amount, so you still hold for as long as you meant to.",
+			"default": true
+		},
+		"release-assist": {
+			"type": "bool",
+			"name": "Release Assist",
+			"description": "In ship, wave and robot, also checks your release and nudges it to the closest safe tick.",
+			"default": true
+		},
+		"other-title": {
+			"type": "title",
+			"name": "Other"
+		},
+		"safe-mode": {
+			"type": "bool",
+			"name": "Safe Mode",
+			"description": "If the mod moved any of your inputs during an attempt, that attempt won't save progress. Attempts where it never stepped in still count.",
+			"default": true
+		},
+		"indicator": {
+			"type": "bool",
+			"name": "Show Adjustments",
+			"description": "Shows a small label in the bottom left whenever an input gets moved. Takes effect next time you enter a level.",
+			"default": false
+		},
+		"experimental-title": {
+			"type": "title",
+			"name": "Experimental"
+		},
+		"smart-predict": {
+			"type": "bool",
+			"name": "Smart Predict",
+			"description": "Fixes clicks that came a little too late. If clicking now would kill you but clicking a moment ago wouldn't have, it rewinds your player those few ticks, applies the click there, then catches back up. Your icon can snap a tiny bit when this happens.",
+			"default": false
+		},
+		"smart-window": {
+			"type": "int",
+			"name": "Smart Predict Window (ms)",
+			"description": "How late a click can be and still get fixed. Bigger windows save more clicks but the snap gets more noticeable.",
+			"default": 25,
+			"min": 4,
+			"max": 50,
+			"enable-if": "smart-predict",
+			"control": {
+				"arrows": true,
+				"arrow-step": 4,
+				"slider": true,
+				"slider-step": 1
+			}
+		}
+	}
+}
