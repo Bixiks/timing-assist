@@ -229,8 +229,12 @@ namespace {
 constexpr int kModeCount = 8;
 constexpr int kLandMargin = 2;
 constexpr int kWindowMargin = 4;
+constexpr int kAfterRelease = 6;
+constexpr int kAfterPress = 6;
 constexpr int kNoTick = -1000000;
 constexpr int kRing = 16;
+constexpr float kClearCap = 40.f;
+constexpr float kShiftPenalty = 1.5f;
 constexpr double kTicksPerSecond = 240.0;
 
 enum class Mode { Cube, Ship, Ball, Ufo, Wave, Robot, Spider, Swing };
@@ -281,10 +285,14 @@ struct Channel {
 struct Config {
     bool enabled = true;
     int maxDelay = 8;
+    int holdMaxDelay = 3;
+    int lead = 2;
+    int leadModes = 1;
     int lookahead = 120;
     bool keepHold = true;
     bool releaseAssist = true;
     bool indicator = false;
+    bool debug = false;
     bool smart = false;
     int smartWindow = 6;
 };
@@ -294,21 +302,40 @@ struct SimEvent {
     bool down;
 };
 
+struct SimRecord {
+    std::vector<CCPoint> path[2];
+    bool died = false;
+    int diedIndex = 0;
+    CCRect outer;
+    CCRect inner;
+    float rotation = 0.f;
+};
+
 struct SimPlan {
     std::vector<SimEvent> events;
     int length = 0;
     int watchFrom = -1;
     int probeAt = -1;
+    bool trackClearance = false;
+    SimRecord* record = nullptr;
 };
 
 struct SimResult {
     int death = -1;
     int unknownAt = -1;
+    float clearance = kClearCap;
 };
 
-struct Pick {
+struct Outcome {
+    bool ok = false;
+    bool idleDeath = false;
+    float clearance = 0.f;
+};
+
+struct Choice {
     int tick = 0;
     bool found = true;
+    bool firstOk = true;
 };
 
 struct Probe {
@@ -324,10 +351,23 @@ struct Targets {
     int channel = 0;
 };
 
+struct EvalContext {
+    PlayLayer* pl = nullptr;
+    Targets const* targets = nullptr;
+    Snapshot const* sources[2] = { nullptr, nullptr };
+    std::vector<SimEvent> pending;
+    Mode mode = Mode::Cube;
+    Config const* cfg = nullptr;
+    int futureFrom = 0;
+    bool wantProbe = false;
+};
+
 struct State {
     PlayLayer* layer = nullptr;
     PlayerObject* fakes[2] = { nullptr, nullptr };
     CCLabelBMFont* label = nullptr;
+    CCDrawNode* liveDraw = nullptr;
+    CCDrawNode* decisionDraw = nullptr;
     Channel channels[2];
     std::array<double, kModeCount> hold{};
     std::array<double, kModeCount> gap{};
@@ -344,8 +384,11 @@ struct State {
     bool catchingUp = false;
     bool simDied = false;
     bool simUnknown = false;
+    bool trackClearance = false;
+    float simClearance = kClearCap;
     bool changedThisAttempt = false;
     bool smartOn = false;
+    bool debugOn = false;
     Probe probe;
     CCPoint probeCapture[3];
     int probeCaptured = 0;
@@ -368,10 +411,15 @@ Config readConfig() {
     Config c;
     c.enabled = mod->getSettingValue<bool>("enabled");
     c.maxDelay = msToTicks(mod->getSettingValue<int64_t>("max-delay"));
+    c.holdMaxDelay = msToTicks(mod->getSettingValue<int64_t>("hold-max-delay"));
+    c.lead = msToTicks(mod->getSettingValue<int64_t>("input-lead"));
+    auto leadModes = mod->getSettingValue<std::string>("lead-modes");
+    c.leadModes = leadModes == "Wave only" ? 0 : leadModes == "All gamemodes" ? 2 : 1;
     c.lookahead = std::max(24, msToTicks(mod->getSettingValue<int64_t>("lookahead")));
     c.keepHold = mod->getSettingValue<bool>("keep-hold");
     c.releaseAssist = mod->getSettingValue<bool>("release-assist");
     c.indicator = mod->getSettingValue<bool>("indicator");
+    c.debug = mod->getSettingValue<bool>("debug-overlay");
     c.smart = mod->getSettingValue<bool>("smart-predict");
     c.smartWindow = std::clamp(msToTicks(mod->getSettingValue<int64_t>("smart-window")), 1, kRing - 2);
     return c;
@@ -396,6 +444,19 @@ Mode modeOf(Snapshot const& s) {
     return modeOf(s.m_isShip, s.m_isBird, s.m_isBall, s.m_isDart, s.m_isRobot, s.m_isSpider, s.m_isSwing);
 }
 
+char const* modeName(Mode m) {
+    switch (m) {
+        case Mode::Ship: return "ship";
+        case Mode::Ball: return "ball";
+        case Mode::Ufo: return "ufo";
+        case Mode::Wave: return "wave";
+        case Mode::Robot: return "robot";
+        case Mode::Spider: return "spider";
+        case Mode::Swing: return "swing";
+        default: return "cube";
+    }
+}
+
 bool isHoldMode(Mode m) {
     return m == Mode::Ship || m == Mode::Wave;
 }
@@ -417,11 +478,54 @@ int holdTicks(Mode m) {
 }
 
 int gapTicks(Mode m) {
-    return std::clamp(static_cast<int>(std::lround(g.gap[idx(m)])), 4, 120);
+    return std::clamp(static_cast<int>(std::lround(g.gap[idx(m)])), 3, 120);
+}
+
+int maxDelayFor(Config const& cfg, Mode m) {
+    return isHoldMode(m) ? std::min(cfg.maxDelay, cfg.holdMaxDelay) : cfg.maxDelay;
+}
+
+int leadFor(Config const& cfg, Mode m) {
+    if (cfg.lead <= 0) return 0;
+    if (cfg.leadModes == 2) return cfg.lead;
+    if (m == Mode::Wave) return cfg.lead;
+    if (m == Mode::Ship && cfg.leadModes == 1) return cfg.lead;
+    return 0;
+}
+
+std::vector<int> spreadAround(int center, int lo, int hi, std::initializer_list<int> base) {
+    std::vector<int> out;
+    for (int v : base) {
+        if (v >= lo && v <= hi) out.push_back(v);
+    }
+    if (out.empty()) out.push_back(std::clamp(center, lo, hi));
+    std::stable_sort(out.begin(), out.end(), [center](int a, int b) {
+        return std::abs(a - center) < std::abs(b - center);
+    });
+    return out;
+}
+
+std::vector<int> holdOptions(Mode m) {
+    int typical = holdTicks(m);
+    if (m == Mode::Robot) {
+        return spreadAround(typical, 2, 40, { 2, 5, 9, 14, 20, 28, 38 });
+    }
+    int lo = std::max(2, typical / 2);
+    int hi = std::clamp(typical * 5 / 2, 8, 50);
+    return spreadAround(typical, lo, hi, { 2, 3, 4, 6, 8, 11, 15, 20, 27, 36, 48 });
+}
+
+std::vector<int> nextPressOptions(Mode m, int minGap) {
+    int typical = gapTicks(m);
+    int lo = std::max(minGap, typical / 2);
+    int hi = std::clamp(typical * 5 / 2, lo + 4, 60);
+    auto out = spreadAround(typical, lo, hi, { 3, 5, 8, 12, 17, 24, 34, 46, 60 });
+    out.push_back(-1);
+    return out;
 }
 
 void learn(double& value, int sample) {
-    value = std::clamp(value * 0.8 + sample * 0.2, 2.0, 120.0);
+    value = std::clamp(value * 0.75 + sample * 0.25, 2.0, 120.0);
 }
 
 bool keepInSim(GameObjectType t) {
@@ -483,6 +587,12 @@ bool isInteractive(GameObject* obj) {
         default:
             return false;
     }
+}
+
+float rectGap(CCRect const& a, CCRect const& b) {
+    float dx = std::max({ 0.f, a.getMinX() - b.getMaxX(), b.getMinX() - a.getMaxX() });
+    float dy = std::max({ 0.f, a.getMinY() - b.getMaxY(), b.getMinY() - a.getMaxY() });
+    return std::sqrt(dx * dx + dy * dy);
 }
 
 void clearLogs(PlayerObject* p) {
@@ -618,16 +728,31 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
         blockY[i] = blocks[i]->m_positionY;
     }
 
+    std::vector<SimEvent> events = plan.events;
+    std::stable_sort(events.begin(), events.end(), [](SimEvent const& a, SimEvent const& b) {
+        return a.tick < b.tick;
+    });
+
     float dt = g.stepDt > 0.f ? g.stepDt : 0.25f;
     SimResult result;
     int end = plan.length;
     size_t next = 0;
     LandPhase phase = plan.watchFrom >= 0 ? LandPhase::WaitStart : LandPhase::Done;
     int groundedFor = 0;
+    auto record = plan.record;
+    if (record) {
+        for (int i = 0; i < count; i++) {
+            record->path[i].clear();
+            record->path[i].push_back(fakes[i]->getPosition());
+        }
+        record->died = false;
+    }
 
     g.simulating = true;
     g.simDied = false;
     g.simUnknown = false;
+    g.trackClearance = plan.trackClearance;
+    g.simClearance = kClearCap;
     g.probeCaptured = 0;
 
     for (int tick = 0; tick < end; tick++) {
@@ -635,26 +760,42 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
             phase = fakes[0]->m_isOnGround ? LandPhase::WaitLeave : LandPhase::WaitFirstLand;
         }
 
-        while (next < plan.events.size() && plan.events[next].tick <= tick) {
+        while (next < events.size() && events[next].tick <= tick) {
             for (int i = 0; i < count; i++) {
-                if (plan.events[next].down) fakes[i]->pushButton(PlayerButton::Jump);
+                if (events[next].down) fakes[i]->pushButton(PlayerButton::Jump);
                 else fakes[i]->releaseButton(PlayerButton::Jump);
             }
             next++;
         }
 
+        int diedIndex = -1;
         for (int i = 0; i < count; i++) {
             auto f = fakes[i];
             clearLogs(f);
             f->update(dt);
             pl->checkCollisions(f, dt, false);
             if (f->m_isDead) g.simDied = true;
-            if (g.simDied || g.simUnknown) break;
+            if (g.simDied) {
+                diedIndex = i;
+                break;
+            }
+            if (g.simUnknown) break;
             f->updateRotation(dt);
+            if (record) record->path[i].push_back(f->getPosition());
         }
 
         if (g.simDied) {
             result.death = tick;
+            if (record && diedIndex >= 0) {
+                auto f = fakes[diedIndex];
+                f->m_isObjectRectDirty = true;
+                record->died = true;
+                record->diedIndex = diedIndex;
+                record->outer = f->GameObject::getObjectRect();
+                record->inner = f->GameObject::getObjectRect(0.3f, 0.3f);
+                record->rotation = f->getRotation();
+                record->path[diedIndex].push_back(f->getPosition());
+            }
             break;
         }
         if (g.simUnknown) {
@@ -698,7 +839,9 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
         }
     }
 
+    result.clearance = g.simClearance;
     g.simulating = false;
+    g.trackClearance = false;
 
     for (int i = 0; i < 2; i++) {
         if (!blocks[i]) continue;
@@ -710,29 +853,129 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
     return result;
 }
 
-void setPressWindow(SimPlan& plan, Mode m, int pressAt, int futureFrom, Config const& cfg) {
-    int hold = holdTicks(m);
-    int gap = gapTicks(m);
-    if (isHoldMode(m)) {
-        plan.length = futureFrom + std::min(cfg.lookahead, hold + kWindowMargin);
+bool considerRun(EvalContext const& c, SimPlan& plan, bool score, Outcome& best, int& survivors, int idleUntil) {
+    plan.length = std::max(plan.length, c.futureFrom + kWindowMargin);
+    plan.trackClearance = score;
+    auto r = runSim(c.pl, c.targets->count, c.sources, plan);
+    if (r.death >= 0 && r.death < idleUntil) best.idleDeath = true;
+    bool ok = r.death < 0 && (r.unknownAt < 0 || r.unknownAt >= c.futureFrom);
+    if (!ok) return false;
+    float clear = std::min(r.clearance, kClearCap);
+    if (!best.ok || clear > best.clearance) {
+        best.ok = true;
+        best.clearance = clear;
     }
-    else if (isLandMode(m)) {
-        plan.length = futureFrom + cfg.lookahead;
-        plan.watchFrom = pressAt;
-    }
-    else {
-        plan.length = futureFrom + std::min(cfg.lookahead, std::max(12, hold + gap) + kWindowMargin);
-    }
+    survivors++;
+    return !score || survivors >= 3;
 }
 
-void setReleaseWindow(SimPlan& plan, Mode m, int releaseAt, int futureFrom, Config const& cfg) {
+SimPlan basePlan(EvalContext const& c) {
+    SimPlan p;
+    p.events = c.pending;
+    return p;
+}
+
+Outcome evalPress(EvalContext const& c, int rel, bool score) {
+    Mode m = c.mode;
+    int anchor = std::max(rel, c.futureFrom);
+    Outcome best;
+    int survivors = 0;
+    bool probeSet = false;
+
+    if (isHoldMode(m) || m == Mode::Robot) {
+        for (int h : holdOptions(m)) {
+            SimPlan p = basePlan(c);
+            p.events.push_back({ rel, true });
+            p.events.push_back({ anchor + h, false });
+            if (m == Mode::Robot) {
+                p.length = anchor + c.cfg->lookahead;
+                p.watchFrom = rel;
+            }
+            else {
+                p.length = anchor + std::min(c.cfg->lookahead, h + kAfterRelease);
+            }
+            bool probe = c.wantProbe && !probeSet && h >= 4 && rel == anchor;
+            if (probe) p.probeAt = rel + std::min(6, h - 2);
+            int before = survivors;
+            bool stop = considerRun(c, p, score, best, survivors, rel);
+            if (probe && survivors > before && g.probeCaptured == 3) {
+                probeSet = true;
+                g.probe.active = true;
+                g.probe.compareAt = g.updates + 2 + p.probeAt;
+                g.probe.player = c.targets->players[0];
+                for (int i = 0; i < 3; i++) g.probe.predicted[i] = g.probeCapture[i];
+            }
+            if (stop || best.idleDeath) break;
+        }
+        return best;
+    }
+
     if (isLandMode(m)) {
-        plan.length = futureFrom + cfg.lookahead;
-        plan.watchFrom = releaseAt;
+        SimPlan p = basePlan(c);
+        int h = holdTicks(m);
+        p.events.push_back({ rel, true });
+        p.events.push_back({ anchor + h, false });
+        p.length = anchor + c.cfg->lookahead;
+        p.watchFrom = rel;
+        bool probe = c.wantProbe && h >= 4 && rel == anchor;
+        if (probe) p.probeAt = rel + std::min(6, h - 2);
+        considerRun(c, p, score, best, survivors, rel);
+        if (probe && survivors > 0 && g.probeCaptured == 3) {
+            g.probe.active = true;
+            g.probe.compareAt = g.updates + 2 + p.probeAt;
+            g.probe.player = c.targets->players[0];
+            for (int i = 0; i < 3; i++) g.probe.predicted[i] = g.probeCapture[i];
+        }
+        return best;
     }
-    else {
-        plan.length = futureFrom + std::min(cfg.lookahead, gapTicks(m) + kWindowMargin);
+
+    int tap = std::min(holdTicks(m), 5);
+    int quiet = m == Mode::Spider ? 14 : 28;
+    for (int gp : nextPressOptions(m, tap + 2)) {
+        SimPlan p = basePlan(c);
+        p.events.push_back({ rel, true });
+        p.events.push_back({ anchor + tap, false });
+        if (gp > 0) {
+            p.events.push_back({ anchor + gp, true });
+            p.events.push_back({ anchor + gp + 2, false });
+            p.length = anchor + std::min(c.cfg->lookahead, gp + kAfterPress + 4);
+        }
+        else {
+            p.length = anchor + std::min(c.cfg->lookahead, quiet);
+        }
+        if (considerRun(c, p, score, best, survivors, rel) || best.idleDeath) break;
     }
+    return best;
+}
+
+Outcome evalRelease(EvalContext const& c, int rel, bool score) {
+    Mode m = c.mode;
+    int anchor = std::max(rel, c.futureFrom);
+    Outcome best;
+    int survivors = 0;
+
+    if (m == Mode::Robot || !isHoldMode(m)) {
+        SimPlan p = basePlan(c);
+        p.events.push_back({ rel, false });
+        p.length = anchor + c.cfg->lookahead;
+        p.watchFrom = rel;
+        considerRun(c, p, score, best, survivors, rel);
+        return best;
+    }
+
+    for (int gp : nextPressOptions(m, 2)) {
+        SimPlan p = basePlan(c);
+        p.events.push_back({ rel, false });
+        if (gp > 0) {
+            p.events.push_back({ anchor + gp, true });
+            p.length = anchor + std::min(c.cfg->lookahead, gp + kAfterPress);
+        }
+        else {
+            p.length = anchor + std::min(c.cfg->lookahead, 10);
+        }
+        if (considerRun(c, p, score, best, survivors, rel) || best.idleDeath) break;
+    }
+    return best;
 }
 
 std::vector<SimEvent> pendingEvents(Channel const& ch, int now) {
@@ -746,71 +989,84 @@ int lastQueuedTick(Channel const& ch, int now) {
     return ch.queue.empty() ? now : std::max(now, ch.queue.back().tick);
 }
 
-Pick pickPressTick(PlayLayer* pl, Targets const& t, Channel const& ch, int now, Config const& cfg) {
-    int base = lastQueuedTick(ch, now);
-    Mode m = modeOf(t.players[0]);
-    int hold = holdTicks(m);
-    auto pending = pendingEvents(ch, now);
+EvalContext liveContext(PlayLayer* pl, Targets const& t, Channel const& ch, int now, Config const& cfg) {
     captureLive(t);
-    Snapshot const* sources[2] = { &g.live[0], &g.live[1] };
-
-    for (int k = 0; k <= cfg.maxDelay; k++) {
-        int rel = base - now + k;
-        SimPlan plan;
-        plan.events = pending;
-        plan.events.push_back({ rel, true });
-        plan.events.push_back({ rel + hold, false });
-        setPressWindow(plan, m, rel, rel, cfg);
-        if (k == 0 && rel == 0) {
-            plan.probeAt = std::clamp(hold - 1, 2, 6);
-        }
-
-        auto r = runSim(pl, t.count, sources, plan);
-        if (r.death < 0) {
-            if (k == 0 && rel == 0 && g.probeCaptured == 3) {
-                g.probe.active = true;
-                g.probe.compareAt = now + 2 + plan.probeAt;
-                g.probe.player = t.players[0];
-                for (int i = 0; i < 3; i++) g.probe.predicted[i] = g.probeCapture[i];
-            }
-            return { base + k, true };
-        }
-        if (r.death < rel) break;
-    }
-    return { base, false };
+    EvalContext c;
+    c.pl = pl;
+    c.targets = &t;
+    c.sources[0] = &g.live[0];
+    c.sources[1] = &g.live[1];
+    c.pending = pendingEvents(ch, now);
+    c.mode = modeOf(t.players[0]);
+    c.cfg = &cfg;
+    c.futureFrom = 0;
+    return c;
 }
 
-Pick pickReleaseTick(PlayLayer* pl, Targets const& t, Channel const& ch, int now, int target, Config const& cfg) {
-    Mode m = modeOf(t.players[0]);
-    if (!cfg.releaseAssist || !releaseMatters(m)) return { target, true };
+template <class Eval>
+Choice chooseTick(int now, int preferred, int lo, int hi, bool nearestOnly, Eval&& eval) {
+    Choice choice;
+    choice.tick = preferred;
+    auto first = eval(preferred - now, false);
+    if (first.ok) return choice;
+    choice.firstOk = false;
 
-    int minTick = std::max(lastQueuedTick(ch, now), ch.firePressTick + 1);
-    auto pending = pendingEvents(ch, now);
-    captureLive(t);
-    Snapshot const* sources[2] = { &g.live[0], &g.live[1] };
-
-    auto safe = [&](int tick) {
-        int rel = tick - now;
-        SimPlan plan;
-        plan.events = pending;
-        plan.events.push_back({ rel, false });
-        setReleaseWindow(plan, m, rel, rel, cfg);
-        return runSim(pl, t.count, sources, plan).death < 0;
-    };
-
-    if (safe(target)) return { target, true };
-    for (int d = 1; d <= cfg.maxDelay; d++) {
-        if (safe(target + d)) return { target + d, true };
-        if (target - d >= minTick && safe(target - d)) return { target - d, true };
+    bool found = false;
+    float bestScore = -1e9f;
+    int bestTick = preferred;
+    for (int d = 1; d <= hi - lo; d++) {
+        for (int side = 0; side < 2; side++) {
+            int t = side == 0 ? preferred + d : preferred - d;
+            if (t < lo || t > hi) continue;
+            auto o = eval(t - now, !nearestOnly);
+            if (!o.ok) continue;
+            float score = o.clearance - kShiftPenalty * d;
+            if (!found || score > bestScore) {
+                found = true;
+                bestScore = score;
+                bestTick = t;
+            }
+        }
+        if (found && nearestOnly) break;
     }
-    return { target, false };
+    choice.found = found;
+    choice.tick = found ? bestTick : preferred;
+    return choice;
+}
+
+Choice choosePress(PlayLayer* pl, Targets const& t, Channel const& ch, int now, Config const& cfg) {
+    auto c = liveContext(pl, t, ch, now, cfg);
+    c.wantProbe = true;
+    int base = lastQueuedTick(ch, now);
+    int preferred = base + leadFor(cfg, c.mode);
+    int hi = preferred + maxDelayFor(cfg, c.mode);
+    bool nearest = isLandMode(c.mode);
+    return chooseTick(now, preferred, base, hi, nearest, [&](int rel, bool score) {
+        auto o = evalPress(c, rel, score);
+        c.wantProbe = false;
+        return o;
+    });
+}
+
+Choice chooseRelease(PlayLayer* pl, Targets const& t, Channel const& ch, int now, int target, Config const& cfg) {
+    Mode m = modeOf(t.players[0]);
+    if (!cfg.releaseAssist || !releaseMatters(m)) return Choice{ target, true, true };
+    auto c = liveContext(pl, t, ch, now, cfg);
+    int lo = std::max(lastQueuedTick(ch, now), ch.firePressTick + 1);
+    lo = std::min(lo, target);
+    int hi = target + maxDelayFor(cfg, m);
+    return chooseTick(now, target, lo, hi, m == Mode::Robot, [&](int rel, bool score) {
+        return evalRelease(c, rel, score);
+    });
 }
 
 int pickLateTicks(PlayLayer* pl, Targets const& t, Channel const& ch, int now, bool press, Config const& cfg) {
     if (!cfg.smart || !g.smartOn || !ch.queue.empty()) return 0;
-    Mode m = modeOf(t.players[0]);
-    int hold = holdTicks(m);
-    Snapshot const* sources[2] = { nullptr, nullptr };
+    EvalContext c;
+    c.pl = pl;
+    c.targets = &t;
+    c.mode = modeOf(t.players[0]);
+    c.cfg = &cfg;
 
     for (int j = 1; j <= cfg.smartWindow; j++) {
         int u = now - j;
@@ -828,24 +1084,13 @@ int pickLateTicks(PlayLayer* pl, Targets const& t, Channel const& ch, int now, b
                 || snap.m_isSideways != p->m_isSideways) {
                 usable = false;
             }
-            sources[i] = &snap;
+            c.sources[i] = &snap;
         }
         if (!usable) break;
 
-        SimPlan plan;
-        if (press) {
-            plan.events.push_back({ 0, true });
-            plan.events.push_back({ j + hold, false });
-            setPressWindow(plan, m, 0, j, cfg);
-        }
-        else {
-            plan.events.push_back({ 0, false });
-            setReleaseWindow(plan, m, 0, j, cfg);
-        }
-        plan.length = std::max(plan.length, j + kWindowMargin);
-
-        auto r = runSim(pl, t.count, sources, plan);
-        if (r.death < 0 && (r.unknownAt < 0 || r.unknownAt >= j)) return j;
+        c.futureFrom = j;
+        auto o = press ? evalPress(c, 0, false) : evalRelease(c, 0, false);
+        if (o.ok) return j;
     }
     return 0;
 }
@@ -886,12 +1131,113 @@ void takeSnapshots(PlayLayer* pl) {
     }
 }
 
+ccColor4F rgba(float r, float gr, float b, float a) {
+    return ccc4f(r, gr, b, a);
+}
+
+void drawRotatedRect(CCDrawNode* node, CCRect const& rect, float rotation, ccColor4F fill, ccColor4F line, float width) {
+    CCPoint center = ccp(rect.getMidX(), rect.getMidY());
+    CCPoint corners[4] = {
+        ccp(rect.getMinX(), rect.getMaxY()),
+        ccp(rect.getMaxX(), rect.getMaxY()),
+        ccp(rect.getMaxX(), rect.getMinY()),
+        ccp(rect.getMinX(), rect.getMinY())
+    };
+    float angle = CC_DEGREES_TO_RADIANS(-rotation);
+    float cs = std::cos(angle);
+    float sn = std::sin(angle);
+    for (auto& v : corners) {
+        float x = v.x - center.x;
+        float y = v.y - center.y;
+        v = ccp(center.x + x * cs - y * sn, center.y + x * sn + y * cs);
+    }
+    node->drawPolygon(corners, 4, fill, width, line);
+}
+
+void drawRecord(CCDrawNode* node, SimRecord const& rec, int count, ccColor4F color) {
+    for (int i = 0; i < count; i++) {
+        auto const& path = rec.path[i];
+        for (size_t k = 1; k < path.size(); k++) {
+            node->drawSegment(path[k - 1], path[k], 0.6f, color);
+        }
+    }
+    if (rec.died) {
+        drawRotatedRect(node, rec.outer, rec.rotation, rgba(1.f, 0.f, 0.f, 0.15f), rgba(1.f, 0.1f, 0.1f, 0.9f), 0.5f);
+        drawRotatedRect(node, rec.inner, 0.f, rgba(0.f, 0.3f, 1.f, 0.15f), rgba(0.1f, 0.4f, 1.f, 0.9f), 0.4f);
+    }
+}
+
 void showIndicator(std::string const& text) {
     if (!g.label || !g.ready) return;
     g.label->setString(text.c_str());
     g.label->stopAllActions();
-    g.label->setOpacity(210);
-    g.label->runAction(CCSequence::create(CCDelayTime::create(0.6f), CCFadeOut::create(0.4f), nullptr));
+    g.label->setOpacity(220);
+    g.label->runAction(CCSequence::create(CCDelayTime::create(0.8f), CCFadeOut::create(0.4f), nullptr));
+}
+
+void drawDecision(PlayLayer* pl, Targets const& t, Channel const& ch, int now, Config const& cfg, int userTick, int chosenTick, bool press) {
+    if (!g.decisionDraw) return;
+    auto c = liveContext(pl, t, ch, now, cfg);
+    Mode m = c.mode;
+    int h = holdTicks(m);
+    auto plan = [&](int tick, SimRecord* rec) {
+        SimPlan p = basePlan(c);
+        int rel = tick - now;
+        if (press) {
+            p.events.push_back({ rel, true });
+            p.events.push_back({ rel + h, false });
+        }
+        else {
+            p.events.push_back({ rel, false });
+        }
+        p.length = rel + std::max(cfg.lookahead, 120);
+        p.record = rec;
+        return p;
+    };
+    SimRecord original;
+    SimRecord chosen;
+    runSim(pl, t.count, c.sources, plan(userTick, &original));
+    runSim(pl, t.count, c.sources, plan(chosenTick, &chosen));
+    g.decisionDraw->clear();
+    drawRecord(g.decisionDraw, original, t.count, rgba(1.f, 0.45f, 0.2f, 0.85f));
+    drawRecord(g.decisionDraw, chosen, t.count, rgba(1.f, 0.95f, 0.2f, 0.95f));
+    g.decisionDraw->stopAllActions();
+    g.decisionDraw->setVisible(true);
+    g.decisionDraw->runAction(CCSequence::create(CCDelayTime::create(1.2f), CCHide::create(), nullptr));
+}
+
+void drawLiveProjection(PlayLayer* pl) {
+    if (!g.liveDraw) return;
+    g.liveDraw->clear();
+    if (!g.debugOn || g.untrusted) return;
+    auto p1 = pl->m_player1;
+    if (!p1 || p1->m_isDead || pl->m_playerDied || pl->m_levelEndAnimationStarted) return;
+
+    auto cfg = readConfig();
+    auto t = targetsFor(pl, true);
+    captureLive(t);
+    Snapshot const* sources[2] = { &g.live[0], &g.live[1] };
+    int length = std::max(cfg.lookahead, 120);
+
+    auto it = p1->m_holdingButtons.find(static_cast<int>(PlayerButton::Jump));
+    bool holding = it != p1->m_holdingButtons.end() && it->second;
+
+    SimRecord holdRec;
+    SimPlan holdPlan;
+    if (!holding) holdPlan.events.push_back({ 0, true });
+    holdPlan.length = length;
+    holdPlan.record = &holdRec;
+    runSim(pl, t.count, sources, holdPlan);
+
+    SimRecord freeRec;
+    SimPlan freePlan;
+    if (holding) freePlan.events.push_back({ 0, false });
+    freePlan.length = length;
+    freePlan.record = &freeRec;
+    runSim(pl, t.count, sources, freePlan);
+
+    drawRecord(g.liveDraw, holdRec, t.count, rgba(0.25f, 0.95f, 0.45f, 0.9f));
+    drawRecord(g.liveDraw, freeRec, t.count, rgba(0.25f, 0.85f, 1.f, 0.9f));
 }
 
 void resetChannels() {
@@ -965,9 +1311,9 @@ bool shouldBlockProgress() {
     return g.changedThisAttempt && Mod::get()->getSettingValue<bool>("safe-mode");
 }
 
-void markChanged(Config const& cfg, std::string const& text) {
-    g.changedThisAttempt = true;
-    if (cfg.indicator && !text.empty()) showIndicator(text);
+void report(Config const& cfg, bool changed, std::string const& text) {
+    if (changed) g.changedThisAttempt = true;
+    if ((cfg.debug || (cfg.indicator && changed)) && !text.empty()) showIndicator(text);
 }
 
 }
@@ -975,10 +1321,17 @@ void markChanged(Config const& cfg, std::string const& text) {
 $on_mod(Loaded) {
     g.hold.fill(20.0);
     g.gap.fill(30.0);
+    g.hold[static_cast<int>(Mode::Wave)] = 10.0;
+    g.gap[static_cast<int>(Mode::Wave)] = 10.0;
     g.smartOn = Mod::get()->getSettingValue<bool>("smart-predict");
+    g.debugOn = Mod::get()->getSettingValue<bool>("debug-overlay");
     listenForSettingChanges<bool>("smart-predict", [](bool value) {
         g.smartOn = value;
         clearRing();
+    });
+    listenForSettingChanges<bool>("debug-overlay", [](bool value) {
+        g.debugOn = value;
+        if (g.liveDraw && !value) g.liveDraw->clear();
     });
 }
 
@@ -1057,27 +1410,37 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
             ch.pressTick = now;
 
             int natural = lastQueuedTick(ch, now);
-            Pick pick{ natural, true };
+            Choice choice{ natural, true, true };
             bool assist = cfg.enabled && canAssist(pl, targets);
-            if (assist) pick = pickPressTick(pl, targets, ch, now, cfg);
+            int preferred = natural;
+            if (assist) {
+                preferred = natural + leadFor(cfg, m);
+                choice = choosePress(pl, targets, ch, now, cfg);
+            }
 
-            if (assist && !pick.found && natural == now) {
+            if (assist && !choice.found && natural == now) {
                 int late = pickLateTicks(pl, targets, ch, now, true, cfg);
                 if (late > 0) {
                     applyLate(pl, targets, late, true, isPlayer1);
                     ch.shift = 0;
                     ch.firePressTick = now - late;
-                    markChanged(cfg, fmt::format("late fix -{}ms", ticksToMs(late)));
+                    report(cfg, true, fmt::format("{} late fix -{}ms", modeName(m), ticksToMs(late)));
                     return;
                 }
             }
 
-            ch.shift = std::max(0, pick.tick - now);
-            ch.firePressTick = pick.tick;
-            if (pick.tick > natural) {
-                markChanged(cfg, fmt::format("press +{}ms", ticksToMs(pick.tick - now)));
+            bool moved = choice.tick != preferred;
+            if (assist && cfg.debug && moved) drawDecision(pl, targets, ch, now, cfg, preferred, choice.tick, true);
+            ch.shift = std::max(0, choice.tick - now);
+            ch.firePressTick = choice.tick;
+            if (assist) {
+                std::string text;
+                if (moved) text = fmt::format("{} press {:+}ms", modeName(m), ticksToMs(choice.tick - preferred));
+                else if (!choice.found) text = fmt::format("{} press: no safe tick", modeName(m));
+                else if (cfg.debug) text = fmt::format("{} press ok", modeName(m));
+                report(cfg, moved, text);
             }
-            send(pick.tick, true);
+            send(choice.tick, true);
             return;
         }
 
@@ -1093,24 +1456,31 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
         int natural = lastQueuedTick(ch, now);
         int target = natural;
         if (cfg.enabled && cfg.keepHold) target = std::max(target, now + ch.shift);
-        Pick pick{ target, true };
+        Choice choice{ target, true, true };
         bool assist = cfg.enabled && canAssist(pl, targets);
-        if (assist) pick = pickReleaseTick(pl, targets, ch, now, target, cfg);
+        Mode m = modeOf(targets.players[0]);
+        if (assist) choice = chooseRelease(pl, targets, ch, now, target, cfg);
 
-        if (assist && !pick.found && target == now && natural == now) {
+        if (assist && !choice.found && target == now && natural == now) {
             int late = pickLateTicks(pl, targets, ch, now, false, cfg);
             if (late > 0) {
                 applyLate(pl, targets, late, false, isPlayer1);
                 ch.shift = 0;
-                markChanged(cfg, fmt::format("late release -{}ms", ticksToMs(late)));
+                report(cfg, true, fmt::format("{} late release -{}ms", modeName(m), ticksToMs(late)));
                 return;
             }
         }
 
-        if (pick.tick != now) {
-            markChanged(cfg, pick.tick != target ? fmt::format("release {:+}ms", ticksToMs(pick.tick - now)) : std::string());
+        bool moved = choice.tick != target;
+        if (assist && cfg.debug && moved) drawDecision(pl, targets, ch, now, cfg, target, choice.tick, false);
+        if (assist && releaseMatters(m)) {
+            std::string text;
+            if (moved) text = fmt::format("{} release {:+}ms", modeName(m), ticksToMs(choice.tick - target));
+            else if (!choice.found) text = fmt::format("{} release: no safe tick", modeName(m));
+            else if (cfg.debug) text = fmt::format("{} release ok", modeName(m));
+            report(cfg, moved, text);
         }
-        send(pick.tick, true);
+        send(choice.tick, true);
         ch.shift = 0;
     }
 
@@ -1122,17 +1492,31 @@ class $modify(TABaseLayer, GJBaseGameLayer) {
 
         std::vector<GameObject*> off;
         off.reserve(32);
-        CCRect reach = player->getObjectRect();
+        CCRect body = player->getObjectRect();
+        CCRect reach = body;
         reach.origin.x -= 6.f;
         reach.origin.y -= 6.f;
         reach.size.width += 12.f;
         reach.size.height += 12.f;
+        bool goingLeft = player->m_isGoingLeft;
 
         int n = std::min(objectCount, static_cast<int>(objects->size()));
         for (int i = 0; i < n; i++) {
             auto obj = (*objects)[i];
             if (!obj) continue;
-            if (keepInSim(obj->m_objectType) && !isCollectibleId(obj->m_objectID)) continue;
+            if (keepInSim(obj->m_objectType) && !isCollectibleId(obj->m_objectID)) {
+                if (!g.trackClearance || obj->m_isDisabled || obj->m_isDisabled2) continue;
+                auto type = obj->m_objectType;
+                CCRect const& r = obj->getObjectRect();
+                if (type == GameObjectType::Hazard || type == GameObjectType::AnimatedHazard) {
+                    g.simClearance = std::min(g.simClearance, rectGap(body, r));
+                }
+                else if (type == GameObjectType::Solid && r.getMinY() < body.getMaxY() - 1.f && r.getMaxY() > body.getMinY() + 1.f) {
+                    float ahead = goingLeft ? body.getMinX() - r.getMaxX() : r.getMinX() - body.getMaxX();
+                    if (ahead >= -1.f) g.simClearance = std::min(g.simClearance, std::max(0.f, ahead));
+                }
+                continue;
+            }
             if (obj->m_isDisabled || obj->m_isDisabled2) continue;
             if (isInteractive(obj) && reach.intersectsRect(obj->getObjectRect())) g.simUnknown = true;
             obj->m_isDisabled = true;
@@ -1198,6 +1582,8 @@ class $modify(TAPlayLayer, PlayLayer) {
         g.fakes[0] = nullptr;
         g.fakes[1] = nullptr;
         g.label = nullptr;
+        g.liveDraw = nullptr;
+        g.decisionDraw = nullptr;
         g.simulating = false;
         g.catchingUp = false;
         g.changedThisAttempt = false;
@@ -1226,8 +1612,21 @@ class $modify(TAPlayLayer, PlayLayer) {
             g.fakes[i] = fake;
         }
 
+        ccBlendFunc blend = { GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA };
+        auto liveDraw = CCDrawNode::create();
+        liveDraw->setBlendFunc(blend);
+        m_objectLayer->addChild(liveDraw, 1000);
+        g.liveDraw = liveDraw;
+
+        auto decisionDraw = CCDrawNode::create();
+        decisionDraw->setBlendFunc(blend);
+        decisionDraw->setVisible(false);
+        m_objectLayer->addChild(decisionDraw, 1001);
+        g.decisionDraw = decisionDraw;
+
+        auto mod = Mod::get();
         g.label = nullptr;
-        if (Mod::get()->getSettingValue<bool>("indicator")) {
+        if (mod->getSettingValue<bool>("indicator") || mod->getSettingValue<bool>("debug-overlay")) {
             auto label = CCLabelBMFont::create("", "bigFont.fnt");
             label->setAnchorPoint({ 0.f, 0.f });
             label->setScale(0.35f);
@@ -1237,12 +1636,18 @@ class $modify(TAPlayLayer, PlayLayer) {
             g.label = label;
         }
 
-        g.smartOn = Mod::get()->getSettingValue<bool>("smart-predict");
+        g.smartOn = mod->getSettingValue<bool>("smart-predict");
+        g.debugOn = mod->getSettingValue<bool>("debug-overlay");
         g.layer = this;
         g.ready = true;
         g.lastAnyInput = g.updates;
         clearRing();
         resetChannels();
+    }
+
+    void postUpdate(float dt) {
+        PlayLayer::postUpdate(dt);
+        if (g.debugOn && layerReady(this) && !g.simulating) drawLiveProjection(this);
     }
 
     void resetLevel() {
@@ -1254,6 +1659,8 @@ class $modify(TAPlayLayer, PlayLayer) {
         g.untrusted = false;
         g.lastAnyInput = g.updates;
         clearRing();
+        if (g.liveDraw && layerReady(this)) g.liveDraw->clear();
+        if (g.decisionDraw && layerReady(this)) g.decisionDraw->clear();
     }
 
     void pauseGame(bool unfocused) {
@@ -1271,6 +1678,8 @@ class $modify(TAPlayLayer, PlayLayer) {
         g.fakes[0] = nullptr;
         g.fakes[1] = nullptr;
         g.label = nullptr;
+        g.liveDraw = nullptr;
+        g.decisionDraw = nullptr;
         clearRing();
         resetChannels();
         PlayLayer::onQuit();

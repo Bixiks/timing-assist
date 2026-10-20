@@ -5,7 +5,7 @@
 	},
 	"id": "assortedfruits.timing-assist",
 	"name": "Timing Assist",
-	"version": "v1.1.0",
+	"version": "v1.2.0",
 	"developer": "Assorted Fruits",
 	"description": "Holds your click for a few ms until the timing is safe, then lets it through. Works in every gamemode.",
 	"tags": [
@@ -40,6 +40,20 @@
 				"slider-step": 1
 			}
 		},
+		"hold-max-delay": {
+			"type": "int",
+			"name": "Wave & Ship Max Delay (ms)",
+			"description": "Max delay for wave and ship. Kept small because a delayed press in wave feels like the game ignored you.",
+			"default": 12,
+			"min": 4,
+			"max": 50,
+			"control": {
+				"arrows": true,
+				"arrow-step": 4,
+				"slider": true,
+				"slider-step": 1
+			}
+		},
 		"lookahead": {
 			"type": "int",
 			"name": "Lookahead (ms)",
@@ -53,6 +67,35 @@
 				"slider": true,
 				"slider-step": 10
 			}
+		},
+		"lead-title": {
+			"type": "title",
+			"name": "Input Lead"
+		},
+		"input-lead": {
+			"type": "int",
+			"name": "Input Lead (ms)",
+			"description": "Delays every click by this tiny amount so the mod can also move clicks earlier, not just later. Set to 0 to turn it off.",
+			"default": 8,
+			"min": 0,
+			"max": 25,
+			"control": {
+				"arrows": true,
+				"arrow-step": 4,
+				"slider": true,
+				"slider-step": 1
+			}
+		},
+		"lead-modes": {
+			"type": "string",
+			"name": "Input Lead Gamemodes",
+			"description": "Which gamemodes use Input Lead.",
+			"default": "Wave and ship",
+			"one-of": [
+				"Wave only",
+				"Wave and ship",
+				"All gamemodes"
+			]
 		},
 		"release-title": {
 			"type": "title",
@@ -84,6 +127,12 @@
 			"type": "bool",
 			"name": "Show Adjustments",
 			"description": "Shows a small label in the bottom left whenever an input gets moved. Takes effect next time you enter a level.",
+			"default": false
+		},
+		"debug-overlay": {
+			"type": "bool",
+			"name": "Debug Overlay",
+			"description": "Draws where you'd die if you click or don't click right now (green = click/hold, blue = don't click/release). When the mod moves an input it briefly shows your timing in orange and its pick in yellow, and it labels every decision in the corner.",
 			"default": false
 		},
 		"experimental-title": {
