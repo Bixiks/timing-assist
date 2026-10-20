@@ -1,3 +1,8 @@
+# v1.3.1
+- Fixed cube jumps getting pushed later on long drops (overshooting the block you meant to land on)
+- Cube, ball and robot checks now follow the jump until you land instead of stopping mid-air
+- A jump that already works only gets swapped if the new one lands on the same block and you were basically touching a spike
+
 # v1.3.0
 - Orbs & pads are simulated with the game's own physics, so clicks on orbs get lined up too
 - Frame perfects: picks safer ticks when your timing only barely survives, searches a bit further as a last resort, and calibrates its own timing

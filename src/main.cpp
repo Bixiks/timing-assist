@@ -241,6 +241,8 @@ constexpr int kRing = 16;
 constexpr float kClearCap = 40.f;
 constexpr float kShiftPenalty = 1.5f;
 constexpr float kRiskClear = 1.5f;
+constexpr float kRiskClearLand = 0.5f;
+constexpr int kLandCap = 360;
 constexpr float kRiskGain = 3.f;
 constexpr float kMaxSnap = 24.f;
 constexpr float kSmoothTime = 0.025f;
@@ -341,11 +343,19 @@ struct SimResult {
     int death = -1;
     int unknownAt = -1;
     float clearance = kClearCap;
+    bool resolved = false;
+    bool landed = false;
+    GameObject* landObject = nullptr;
+    float landY = 0.f;
 };
 
 struct Outcome {
     bool ok = false;
     bool idleDeath = false;
+    bool resolved = false;
+    bool haveLanding = false;
+    GameObject* landObject = nullptr;
+    float landY = 0.f;
     float clearance = 0.f;
     int survivors = 0;
 };
@@ -907,12 +917,18 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
                 else if (++groundedFor > 3) {
                     phase = LandPhase::Done;
                     end = std::min(end, tick + 1 + kLandMargin);
+                    result.landed = true;
+                    result.landObject = fakes[0]->m_lastGroundObject;
+                    result.landY = fakes[0]->getPositionY();
                 }
                 break;
             case LandPhase::WaitLand:
                 if (grounded) {
                     phase = LandPhase::Done;
                     end = std::min(end, tick + 1 + kLandMargin);
+                    result.landed = true;
+                    result.landObject = fakes[0]->m_lastGroundObject;
+                    result.landY = fakes[0]->getPositionY();
                 }
                 break;
             default:
@@ -921,6 +937,10 @@ SimResult runSim(PlayLayer* pl, int count, Snapshot const* const* sources, SimPl
     }
 
     result.clearance = g.simClearance;
+    if (result.death >= 0) result.resolved = true;
+    else if (result.unknownAt >= 0) result.resolved = false;
+    else if (plan.watchFrom >= 0) result.resolved = result.landed;
+    else result.resolved = true;
     g.simulating = false;
     g.trackClearance = false;
 
@@ -979,6 +999,12 @@ bool considerRun(EvalContext const& c, SimPlan& plan, bool score, Outcome& best,
         best.ok = true;
         best.clearance = clear;
     }
+    if (r.resolved) best.resolved = true;
+    if (r.landed && !best.haveLanding) {
+        best.haveLanding = true;
+        best.landObject = r.landObject;
+        best.landY = r.landY;
+    }
     best.survivors++;
     return !score || best.survivors >= 3;
 }
@@ -1014,7 +1040,7 @@ Outcome evalPress(EvalContext const& c, int rel, bool score) {
             p.events.push_back({ rel, true });
             p.events.push_back({ anchor + h, false });
             if (m == Mode::Robot) {
-                p.length = anchor + c.cfg->lookahead;
+                p.length = anchor + std::max(c.cfg->lookahead, kLandCap);
                 p.watchFrom = rel;
             }
             else {
@@ -1028,12 +1054,13 @@ Outcome evalPress(EvalContext const& c, int rel, bool score) {
 
     if (isLandMode(m)) {
         int h = holdTicks(m);
-        int releases[2] = { anchor + h, anchor + c.cfg->lookahead + 1 };
+        int cap = std::max(c.cfg->lookahead, kLandCap);
+        int releases[2] = { anchor + h, anchor + cap + 1 };
         for (int releaseAt : releases) {
             SimPlan p = basePlan(c);
             p.events.push_back({ rel, true });
             p.events.push_back({ releaseAt, false });
-            p.length = anchor + c.cfg->lookahead;
+            p.length = anchor + cap;
             p.watchFrom = rel;
             runPressPlan(c, p, rel, releaseAt, score, best, probeDone, stop);
             if (stop || best.idleDeath) break;
@@ -1069,7 +1096,7 @@ Outcome evalRelease(EvalContext const& c, int rel, bool score) {
     if (m == Mode::Robot || !isHoldMode(m)) {
         SimPlan p = basePlan(c);
         p.events.push_back({ rel, false });
-        p.length = anchor + c.cfg->lookahead;
+        p.length = anchor + std::max(c.cfg->lookahead, kLandCap);
         p.watchFrom = rel;
         considerRun(c, p, score, best, rel);
         return best;
@@ -1115,44 +1142,59 @@ EvalContext liveContext(PlayLayer* pl, Targets const& t, Channel const& ch, int 
     return c;
 }
 
+bool sameLanding(Outcome const& a, Outcome const& b) {
+    if (!a.haveLanding || !b.haveLanding) return false;
+    if (a.landObject || b.landObject) return a.landObject == b.landObject;
+    return std::abs(a.landY - b.landY) < 2.f;
+}
+
 template <class Eval>
-Choice chooseTick(int now, int preferred, int lo, int hi, bool nearestOnly, Eval&& eval) {
+Choice chooseTick(int now, int preferred, int lo, int hi, bool landMode, Eval&& eval) {
     Choice choice;
     choice.tick = preferred;
     auto first = eval(preferred - now, true);
     choice.firstOk = first.ok;
-    if (first.ok && first.clearance >= kRiskClear) return choice;
+    float riskLine = landMode ? kRiskClearLand : kRiskClear;
+    if (first.ok && (first.clearance >= riskLine || !first.resolved)) return choice;
 
-    auto search = [&](int a, int b, float need, int& outTick) {
+    auto search = [&](int a, int b, auto&& accept, int& outTick) {
         bool found = false;
         float bestScore = -1e9f;
         int span = std::max(preferred - a, b - preferred);
+        bool stopSide[2] = { false, false };
         for (int d = 1; d <= span; d++) {
             for (int side = 0; side < 2; side++) {
+                if (stopSide[side]) continue;
                 int t = side == 0 ? preferred + d : preferred - d;
                 if (t < a || t > b) continue;
                 auto o = eval(t - now, true);
-                if (!o.ok || o.clearance < need) continue;
-                float score = o.clearance + static_cast<float>(o.survivors) - kShiftPenalty * d;
+                if (o.idleDeath && side == 0) stopSide[0] = true;
+                if (!accept(o)) continue;
+                float score = o.clearance + static_cast<float>(o.survivors) + (o.resolved ? 5.f : 0.f) - kShiftPenalty * d;
                 if (!found || score > bestScore) {
                     found = true;
                     bestScore = score;
                     outTick = t;
                 }
-                if (o.idleDeath) break;
             }
-            if (found && nearestOnly) break;
+            if (found && landMode) break;
         }
         return found;
     };
 
     int picked = preferred;
     if (first.ok) {
-        if (search(lo, hi, first.clearance + kRiskGain, picked)) choice.tick = picked;
+        auto safer = [&](Outcome const& o) {
+            if (!o.ok || !o.resolved || o.clearance < first.clearance + kRiskGain) return false;
+            if (first.haveLanding && !sameLanding(first, o)) return false;
+            return true;
+        };
+        if (search(lo, hi, safer, picked)) choice.tick = picked;
         return choice;
     }
 
-    if (search(lo, hi, 0.f, picked) || search(hi + 1, hi + kRescue, 0.f, picked)) {
+    auto alive = [](Outcome const& o) { return o.ok; };
+    if (search(lo, hi, alive, picked) || search(hi + 1, hi + kRescue, alive, picked)) {
         choice.tick = picked;
         return choice;
     }

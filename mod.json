@@ -5,7 +5,7 @@
 	},
 	"id": "assortedfruits.timing-assist",
 	"name": "Timing Assist",
-	"version": "v1.3.0",
+	"version": "v1.3.1",
 	"developer": "Assorted Fruits",
 	"description": "Holds your click for a few ms until the timing is safe, then lets it through. Works in every gamemode.",
 	"tags": [
@@ -57,7 +57,7 @@
 		"lookahead": {
 			"type": "int",
 			"name": "Lookahead (ms)",
-			"description": "How far ahead it checks whether a click would kill you. Cube, ball and robot check until you land, so this is just the limit.",
+			"description": "How far ahead it checks whether a click would kill you in ship, wave, UFO, swing and spider. Cube, ball and robot always follow the jump until you land (up to 1.5s).",
 			"default": 500,
 			"min": 150,
 			"max": 1000,
