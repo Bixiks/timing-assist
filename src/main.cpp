@@ -872,8 +872,15 @@ struct State {
     std::set<std::string> simTouched;
     std::set<std::string> simTouchedLogged;
     bool saveCalled = false;
+    bool saveBlocked = false;
     int savePercent = 0;
     bool saveChk = false;
+    PlayLayer* diagOwner = nullptr;
+    int bestBefore = 0;
+    int bestAfter = 0;
+    int diedAt = 0;
+    bool diedPlatformer = false;
+    bool diedMoved = false;
     bool diagDeath = false;
     bool deathVerified = false;
     bool deathIntegrity = false;
@@ -991,6 +998,8 @@ struct GameGuard {
     gd::map<std::pair<int, int>, int> activated;
     gd::unordered_map<int, GameObjectPhysics> physics;
     gd::unordered_map<int, GJValueTween> tweens;
+    gd::vector<GameObject*> solids;
+    gd::vector<GameObject*> hazards;
     int idCounter = 0;
     PlayerObject* players[2] = { nullptr, nullptr };
     Snapshot playerState[2];
@@ -1020,6 +1029,8 @@ struct GameGuard {
         activated = gs.m_activatedObjectIDs;
         physics = gs.m_gameObjectPhysics;
         tweens = gs.m_tweenActions;
+        solids = pl->m_solidCollisionObjects;
+        hazards = pl->m_hazardCollisionObjects;
         idCounter = *reinterpret_cast<int*>(geode::base::get() + 0x6ba158);
         players[0] = pl->m_player1;
         players[1] = pl->m_player2;
@@ -1057,6 +1068,8 @@ struct GameGuard {
         gs.m_gameObjectPhysics = physics;
         if (gs.m_tweenActions.size() != tweens.size()) noteTouched("state", "m_tweenActions");
         gs.m_tweenActions = tweens;
+        pl->m_solidCollisionObjects = solids;
+        pl->m_hazardCollisionObjects = hazards;
         int nowCounter = *reinterpret_cast<int*>(geode::base::get() + 0x6ba158);
         if (nowCounter != idCounter) noteTouched("game", "uniqueIDCounter");
         for (int i = 0; i < 2; i++) {
@@ -2291,30 +2304,34 @@ void dispatch(GJBaseGameLayer* layer, Channel& ch, Queued const& q) {
 }
 
 void showDiag(PlayLayer* pl, bool completed) {
-    if (!g.debugOn || !g.diagLabel) return;
+    if (!g.diagLabel || g.diagOwner != pl) return;
+    std::vector<std::string> names(g.simTouched.begin(), g.simTouched.end());
     std::string touched;
-    int shown = 0;
-    for (auto const& name : g.simTouched) {
-        if (shown == 4) {
-            touched += fmt::format(" +{}", g.simTouched.size() - 4);
-            break;
-        }
-        touched += (shown ? ", " : "") + name;
-        shown++;
+    for (size_t i = 0; i < names.size(); i++) {
+        if (i > 0) touched += (i % 3 == 0) ? ",\n  " : ", ";
+        touched += names[i];
     }
     if (touched.empty()) touched = "nothing";
     bool verified = completed ? pl->m_damageVerified : g.deathVerified;
     bool integrity = completed ? pl->m_passedIntegrity : g.deathIntegrity;
     bool testMode = completed ? pl->m_isTestMode : g.deathTestMode;
     bool practice = completed ? pl->m_isPracticeMode : g.deathPractice;
-    std::string save = g.saveCalled ? fmt::format("save {}% chk {}", g.savePercent, g.saveChk ? 1 : 0) : std::string("save not called");
-    std::string text = fmt::format("{}\nverified {} integrity {} test {} practice {}\nchecks changed: {}",
-        save, verified ? 1 : 0, integrity ? 1 : 0, testMode ? 1 : 0, practice ? 1 : 0, touched);
+    bool platformer = completed ? pl->m_isPlatformer : g.diedPlatformer;
+    int bestNow = pl->m_level ? pl->m_level->m_normalPercent.value() : 0;
+    std::string save;
+    if (!g.saveCalled) save = "save not called";
+    else if (g.saveBlocked) save = fmt::format("save {}% blocked by safe mode", g.savePercent);
+    else save = fmt::format("save {}% chk {}", g.savePercent, g.saveChk ? 1 : 0);
+    std::string text = fmt::format(
+        "mod {} | died at {}% | best before {}% now {}%\n{}\nverified {} integrity {} test {} practice {} platformer {}\nsafe mode {} moved input {}\nchanged: {}",
+        layerReady(pl) ? "on" : "off", g.diedAt, g.bestBefore, bestNow, save,
+        verified ? 1 : 0, integrity ? 1 : 0, testMode ? 1 : 0, practice ? 1 : 0, platformer ? 1 : 0,
+        Mod::get()->getSettingValue<bool>("safe-mode") ? "on" : "off", g.diedMoved ? "yes" : "no", touched);
     log::info("save check: {}", text);
     g.diagLabel->stopAllActions();
     g.diagLabel->setString(text.c_str());
     g.diagLabel->setOpacity(230);
-    g.diagLabel->runAction(CCSequence::create(CCDelayTime::create(6.f), CCFadeOut::create(0.5f), nullptr));
+    g.diagLabel->runAction(CCSequence::create(CCDelayTime::create(8.f), CCFadeOut::create(0.5f), nullptr));
 }
 
 void report(Config const& cfg, bool changed, std::string const& text) {
@@ -2742,6 +2759,7 @@ class $modify(TAPlayLayer, PlayLayer) {
         g.fakes[1] = nullptr;
         g.label = nullptr;
         g.diagLabel = nullptr;
+        g.diagOwner = nullptr;
         g.liveDraw = nullptr;
         g.decisionDraw = nullptr;
         g.simulating = false;
@@ -2763,6 +2781,21 @@ class $modify(TAPlayLayer, PlayLayer) {
     void setupHasCompleted() {
         PlayLayer::setupHasCompleted();
         g.attemptStart = g.updates;
+        g.diagOwner = this;
+        g.diagDeath = false;
+        g.saveCalled = false;
+        g.saveBlocked = false;
+        g.simTouched.clear();
+        g.diagLabel = nullptr;
+        if (Mod::get()->getSettingValue<bool>("debug-overlay")) {
+            auto diag = CCLabelBMFont::create("", "bigFont.fnt");
+            diag->setAnchorPoint({ 0.f, 0.f });
+            diag->setScale(0.28f);
+            diag->setPosition({ 6.f, 22.f });
+            diag->setOpacity(0);
+            this->addChild(diag, 1000);
+            g.diagLabel = diag;
+        }
         if (!Mod::get()->getSettingValue<bool>("enabled")) return;
 
         int* idCounter = reinterpret_cast<int*>(geode::base::get() + 0x6ba158);
@@ -2811,16 +2844,6 @@ class $modify(TAPlayLayer, PlayLayer) {
             this->addChild(label, 1000);
             g.label = label;
         }
-        g.diagLabel = nullptr;
-        if (mod->getSettingValue<bool>("debug-overlay")) {
-            auto diag = CCLabelBMFont::create("", "bigFont.fnt");
-            diag->setAnchorPoint({ 0.f, 0.f });
-            diag->setScale(0.3f);
-            diag->setPosition({ 6.f, 22.f });
-            diag->setOpacity(0);
-            this->addChild(diag, 1000);
-            g.diagLabel = diag;
-        }
 
         g.smartOn = mod->getSettingValue<bool>("smart-predict");
         g.debugOn = mod->getSettingValue<bool>("debug-overlay");
@@ -2841,9 +2864,10 @@ class $modify(TAPlayLayer, PlayLayer) {
 
     void resetLevel() {
         bool ready = layerReady(this);
-        if (ready && g.diagDeath) showDiag(this, false);
+        if (g.diagDeath) showDiag(this, false);
         g.diagDeath = false;
         g.saveCalled = false;
+        g.saveBlocked = false;
         g.simTouched.clear();
         if (ready) flushAll(this);
         endAllSmooth(ready);
@@ -2875,6 +2899,7 @@ class $modify(TAPlayLayer, PlayLayer) {
         g.fakes[1] = nullptr;
         g.label = nullptr;
         g.diagLabel = nullptr;
+        g.diagOwner = nullptr;
         g.liveDraw = nullptr;
         g.decisionDraw = nullptr;
         endAllSmooth(false);
@@ -2894,13 +2919,20 @@ class $modify(TAPlayLayer, PlayLayer) {
             g.simDied = true;
             return;
         }
+        bool track = g.diagOwner == this && !g.diagDeath && !m_playerDied;
+        if (track) {
+            g.bestBefore = m_level ? m_level->m_normalPercent.value() : 0;
+            g.diedAt = getCurrentPercentInt();
+            g.diedMoved = g.changedThisAttempt;
+        }
         PlayLayer::destroyPlayer(player, object);
-        if (layerReady(this) && player && player->m_isDead && !g.diagDeath) {
+        if (track && m_playerDied) {
             g.diagDeath = true;
             g.deathVerified = m_damageVerified;
             g.deathIntegrity = m_passedIntegrity;
             g.deathTestMode = m_isTestMode;
             g.deathPractice = m_isPracticeMode;
+            g.diedPlatformer = m_isPlatformer;
         }
     }
 
@@ -2925,10 +2957,13 @@ class $modify(TAPlayLayer, PlayLayer) {
     void levelComplete() {
         bool block = shouldBlockProgress();
         bool testMode = m_isTestMode;
+        g.bestBefore = m_level ? m_level->m_normalPercent.value() : 0;
         if (block) m_isTestMode = true;
         PlayLayer::levelComplete();
         m_isTestMode = testMode;
-        if (layerReady(this)) showDiag(this, true);
+        g.diedAt = 100;
+        g.diedMoved = g.changedThisAttempt;
+        showDiag(this, true);
     }
 
     void showNewBest(bool newReward, int orbs, int diamonds, bool demonKey, bool noRetry, bool noTitle) {
@@ -3045,12 +3080,14 @@ class $modify(TAGameObject, GameObject) {
 
 class $modify(TAGameLevel, GJGameLevel) {
     void savePercentage(int percent, bool isPracticeMode, int clicks, int attempts, bool isChkValid) {
-        if (PlayLayer::get() && shouldBlockProgress()) return;
+        bool block = PlayLayer::get() && shouldBlockProgress();
         if (PlayLayer::get() && !isPracticeMode) {
             g.saveCalled = true;
+            g.saveBlocked = block;
             g.savePercent = percent;
             g.saveChk = isChkValid;
         }
+        if (block) return;
         GJGameLevel::savePercentage(percent, isPracticeMode, clicks, attempts, isChkValid);
     }
 };

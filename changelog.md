@@ -1,3 +1,8 @@
+# v1.4.5
+- The mod now also puts back the game's lists of nearby blocks and spikes after every check
+- Save check shows more: your best before and after, where you died, Safe Mode, and whether the game's save was blocked
+- Save check now works with Enabled off too, so you can compare
+
 # v1.4.4
 - Bigger fix for percent and orbs not saving: after every check the mod now puts back every value in the level and game state it could have touched, not just a few
 - Debug Overlay now shows a save check after each attempt, to help track down saving problems
